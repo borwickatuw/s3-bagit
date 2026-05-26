@@ -65,7 +65,7 @@ def _resolve_credentials() -> tuple[str, str, str]:
         return _from_direct_env()
     raise ConfigError(
         "No Kopah credentials configured. Set one of:\n"
-        "  • S3CMD_CONFIG=/path/to/.s3cfg (recommended for operators)\n"
+        "  • S3CMD_CONFIG=/path/to/.s3cfg (recommended)\n"
         "  • KOPAH_ACCESS_KEY + KOPAH_SECRET_KEY + KOPAH_ENDPOINT\n"
         "See .env.example for details."
     )
