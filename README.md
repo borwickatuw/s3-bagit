@@ -115,9 +115,17 @@ manifest/oxum disagreements — instead of stopping at the first one.
 s3-bagit ls s3://test-bucket/path/to/bag.tgz
 ```
 
-Prints one line per file member plus a summary. Useful as a sanity
-check before kicking off a multi-GB extract job ("is this archive
-actually a bag? what's the top-level directory called?").
+Prints one line per file member plus a summary.
+
+**Caveat — `ls` is not a cheap operation.** Tar archives have no
+central index, so listing members means streaming the whole archive
+just to read each header. Our zip path streams it too. For a 100 GB
+archive, `ls` downloads 100 GB. To peek at just the top-level
+structure, pipe to `head` and Ctrl-C once you've seen what you need:
+
+```
+s3-bagit ls s3://test-bucket/path/to/bag.tgz | head
+```
 
 ### Report a problem
 
