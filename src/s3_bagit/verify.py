@@ -25,8 +25,8 @@ import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
-from kopah_bagit.exceptions import BagError
-from kopah_bagit.log_config import get_logger
+from s3_bagit.exceptions import BagError
+from s3_bagit.log_config import get_logger
 
 log = get_logger(__name__)
 
@@ -219,7 +219,7 @@ def verify_bag(client, bucket: str, bag_prefix: str) -> BagVerifyResult:
     """Verify the BagIt bag rooted at ``s3://bucket/bag_prefix``.
 
     ``bag_prefix`` MUST end with ``/`` (the caller normalizes via
-    :func:`kopah_bagit.s3_url.parse_s3_prefix`).
+    :func:`s3_bagit.s3_url.parse_s3_prefix`).
     """
     bag_url = f"s3://{bucket}/{bag_prefix}"
     result = BagVerifyResult(bag_url=bag_url)
@@ -242,7 +242,7 @@ def verify_bag(client, bucket: str, bag_prefix: str) -> BagVerifyResult:
     # fetch.txt is out of scope — fail loud rather than silently miss files.
     if "fetch.txt" in objects and objects["fetch.txt"]["Size"] > 0:
         result.fail(
-            "fetch.txt is non-empty; kopah-bagit does not yet handle remote-fetch bags. "
+            "fetch.txt is non-empty; s3-bagit does not yet handle remote-fetch bags. "
             "Resolve fetch.txt before verifying."
         )
 

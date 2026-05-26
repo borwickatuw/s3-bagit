@@ -2,7 +2,7 @@
 
 import pytest
 
-from kopah_bagit.extract import extract
+from s3_bagit.extract import extract
 
 from .conftest import build_tar_gz, build_zip, make_bag_files
 

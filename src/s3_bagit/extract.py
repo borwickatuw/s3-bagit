@@ -1,4 +1,4 @@
-"""Streaming bag-archive extract from Kopah to Kopah.
+"""Streaming bag-archive extract from S3 to S3.
 
 Both ``extract_tar_gz`` and ``extract_zip`` stream the archive object out
 of S3, decompress on the fly, and ``upload_fileobj`` each member back to
@@ -15,7 +15,7 @@ from collections.abc import Iterable
 
 from stream_unzip import stream_unzip
 
-from kopah_bagit.log_config import get_logger
+from s3_bagit.log_config import get_logger
 
 log = get_logger(__name__)
 

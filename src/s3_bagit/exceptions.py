@@ -1,4 +1,4 @@
-"""Exceptions raised by kopah-bagit.
+"""Exceptions raised by s3-bagit.
 
 Library code raises these instead of calling sys.exit(). The CLI entry
 point catches them and maps to a non-zero exit code with a clean error

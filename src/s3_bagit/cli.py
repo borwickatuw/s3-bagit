@@ -1,4 +1,4 @@
-"""``kopah-bagit`` command-line entry point.
+"""``s3-bagit`` command-line entry point.
 
 Two subcommands:
 
@@ -9,9 +9,9 @@ Two subcommands:
 
   * ``verify`` — verify an already-extracted bag at an S3 prefix.
 
-The CLI's job is to parse args, build the Kopah client, dispatch, and
+The CLI's job is to parse args, build the S3 client, dispatch, and
 translate exceptions into clean stderr messages + exit codes. All real
-work lives in :mod:`kopah_bagit.extract` and :mod:`kopah_bagit.verify`.
+work lives in :mod:`s3_bagit.extract` and :mod:`s3_bagit.verify`.
 """
 
 import argparse
@@ -21,13 +21,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from kopah_bagit import __version__
-from kopah_bagit.exceptions import BagError, ConfigError
-from kopah_bagit.extract import extract
-from kopah_bagit.kopah_client import load_client
-from kopah_bagit.log_config import get_logger, setup_console
-from kopah_bagit.s3_url import detect_format, parse_s3_prefix, parse_s3_url
-from kopah_bagit.verify import BagVerifyResult, verify_bag
+from s3_bagit import __version__
+from s3_bagit.exceptions import BagError, ConfigError
+from s3_bagit.extract import extract
+from s3_bagit.s3_client import load_client
+from s3_bagit.log_config import get_logger, setup_console
+from s3_bagit.s3_url import detect_format, parse_s3_prefix, parse_s3_url
+from s3_bagit.verify import BagVerifyResult, verify_bag
 
 log = get_logger(__name__)
 
@@ -39,13 +39,13 @@ _EXIT_CONFIG_ERROR = 2
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="kopah-bagit",
+        prog="s3-bagit",
         description=(
-            "BagIt extract and verify operations against Kopah (Ceph S3). "
+            "BagIt extract and verify operations against any S3-compatible storage. "
             "All operations stream end-to-end — nothing is staged on local disk."
         ),
     )
-    parser.add_argument("--version", action="version", version=f"kopah-bagit {__version__}")
+    parser.add_argument("--version", action="version", version=f"s3-bagit {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show per-file progress.")
 
     sub = parser.add_subparsers(dest="command", required=True)
@@ -157,7 +157,7 @@ def _guard_against_archive_url(bag_url: str) -> None:
             f"at an S3 prefix.\n"
             f"To check this archive's contents, extract it first "
             f"(extract auto-verifies):\n"
-            f"    kopah-bagit extract {bag_url} s3://<bucket>/<dest-prefix>/\n"
+            f"    s3-bagit extract {bag_url} s3://<bucket>/<dest-prefix>/\n"
             f"Verifying a serialized bag without extracting it is not "
             f"implemented in v1 — see docs/BAGIT-SPEC.md."
         )

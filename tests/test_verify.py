@@ -4,7 +4,7 @@ import hashlib
 
 import pytest
 
-from kopah_bagit.verify import verify_bag
+from s3_bagit.verify import verify_bag
 
 from .conftest import make_bag_files, upload_bag_to_prefix
 

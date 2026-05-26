@@ -1,6 +1,6 @@
 """S3 URL parsing and archive-format detection."""
 
-from kopah_bagit.exceptions import ConfigError
+from s3_bagit.exceptions import ConfigError
 
 
 def parse_s3_url(url: str) -> tuple[str, str]:

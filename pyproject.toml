@@ -1,7 +1,7 @@
 [project]
-name = "kopah-bagit"
+name = "s3-bagit"
 version = "0.1.0"
-description = "BagIt extract/verify operations against UW Libraries' Kopah (Ceph S3), streaming end-to-end."
+description = "BagIt extract and verify against any S3-compatible storage, streaming end-to-end."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "BSD-3-Clause" }
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-kopah-bagit = "kopah_bagit.cli:main"
+s3-bagit = "s3_bagit.cli:main"
 
 [dependency-groups]
 dev = [
@@ -33,7 +33,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/kopah_bagit"]
+packages = ["src/s3_bagit"]
 
 [tool.uv]
 # Local-only tool: keep everything available after `uv sync` per PYTHON.md §6.
@@ -68,13 +68,14 @@ select = [
     "ARG002",
     "S105",
     "S106",
+    "S107",    # hardcoded "password" defaults — fixture knobs, not real creds
     "T20",
     "PLW0603",
 ]
-"src/kopah_bagit/cli.py" = [
+"src/s3_bagit/cli.py" = [
     "T20",     # CLI prints to user
 ]
-"src/kopah_bagit/verify.py" = [
+"src/s3_bagit/verify.py" = [
     "S324",    # md5/sha1 are legitimate BagIt manifest algorithms
 ]
 
@@ -88,7 +89,7 @@ pythonpath = ["src"]
 addopts = "--strict-markers -ra --tb=short"
 
 [tool.coverage.run]
-source = ["src/kopah_bagit"]
+source = ["src/s3_bagit"]
 branch = true
 omit = ["*/__init__.py"]
 

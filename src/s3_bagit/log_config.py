@@ -1,4 +1,4 @@
-"""Logging setup for kopah-bagit.
+"""Logging setup for s3-bagit.
 
 One module-level logger per file. Console handler is attached lazily by
 the CLI entry point so library callers can configure logging themselves.

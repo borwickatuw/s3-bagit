@@ -1,9 +1,9 @@
-"""Tests for kopah_bagit.s3_url."""
+"""Tests for s3_bagit.s3_url."""
 
 import pytest
 
-from kopah_bagit.exceptions import ConfigError
-from kopah_bagit.s3_url import detect_format, parse_s3_prefix, parse_s3_url
+from s3_bagit.exceptions import ConfigError
+from s3_bagit.s3_url import detect_format, parse_s3_prefix, parse_s3_url
 
 
 class TestParseS3Url:

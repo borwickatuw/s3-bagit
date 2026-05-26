@@ -1,10 +1,10 @@
-"""End-to-end CLI smoke tests (with a patched Kopah client + moto)."""
+"""End-to-end CLI smoke tests (with a patched S3 client + moto)."""
 
 from unittest.mock import patch
 
 import pytest
 
-from kopah_bagit.cli import main
+from s3_bagit.cli import main
 
 from .conftest import build_tar_gz, build_zip, make_bag_files, upload_bag_to_prefix
 
@@ -12,7 +12,7 @@ from .conftest import build_tar_gz, build_zip, make_bag_files, upload_bag_to_pre
 @pytest.fixture
 def patched_client(s3_client):
     """Make ``load_client()`` (called from the CLI) return the moto client."""
-    with patch("kopah_bagit.cli.load_client", return_value=s3_client):
+    with patch("s3_bagit.cli.load_client", return_value=s3_client):
         yield s3_client
 
 
@@ -83,15 +83,26 @@ class TestVerifyCommand:
 
 class TestConfigErrors:
     def test_missing_creds_exits_2(self, capsys, monkeypatch, tmp_path):
-        # No patched_client here — let load_client() run for real.
-        # Clear env vars AND point HOME at an empty dir so the developer's
-        # own ~/.s3cfg can't accidentally satisfy credential resolution.
-        for k in ("S3CMD_CONFIG", "KOPAH_ACCESS_KEY", "KOPAH_SECRET_KEY", "KOPAH_ENDPOINT"):
+        # No patched_client — let load_client() run for real. Clear every
+        # credential source AND point HOME at an empty dir, then stub
+        # boto3.Session so the test doesn't accidentally succeed via
+        # ~/.aws/credentials, an EC2 instance role, or AWS SSO.
+        for k in (
+            "S3CMD_CONFIG",
+            "S3_ENDPOINT_URL",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_PROFILE",
+            "AWS_DEFAULT_PROFILE",
+        ):
             monkeypatch.delenv(k, raising=False)
         monkeypatch.setenv("HOME", str(tmp_path))
-        rc = main(["verify", "s3://x/"])
+        with patch("s3_bagit.s3_client.boto3.Session") as mock_session:
+            mock_session.return_value.get_credentials.return_value = None
+            rc = main(["verify", "s3://x/"])
         assert rc == 2
-        assert "No Kopah credentials" in capsys.readouterr().err
+        assert "No S3 credentials configured" in capsys.readouterr().err
 
     def test_bad_archive_url_exits_2(self, patched_client, capsys):
         rc = main(["extract", "s3://src-bucket/file.rar", "s3://dest-bucket/out/"])
@@ -117,7 +128,7 @@ class TestVerifyGuard:
         assert rc == 2, captured.err
         assert "RESULT:" not in captured.out  # No verify report printed.
         assert "looks like an archive file" in captured.err
-        assert "kopah-bagit extract" in captured.err
+        assert "s3-bagit extract" in captured.err
 
     def test_prefix_url_is_not_guarded(self, patched_client, capsys):
         # A normal prefix (no archive suffix) is allowed through to verify_bag.

@@ -72,5 +72,5 @@ security-update: ## Update security-sensitive deps
 # =============================================================================
 
 .PHONY: run
-run: ## Invoke kopah-bagit with ARGS (e.g. make run ARGS='extract s3://... s3://...')
-	@uv run kopah-bagit $(ARGS)
+run: ## Invoke s3-bagit with ARGS (e.g. make run ARGS='extract s3://... s3://...')
+	@uv run s3-bagit $(ARGS)

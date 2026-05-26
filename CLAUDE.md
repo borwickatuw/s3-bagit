@@ -1,53 +1,60 @@
-# kopah-bagit
+# s3-bagit
 
 ## Project Overview
 
-Two-operation CLI for BagIt (RFC 8493) workflows against UW Libraries'
-Kopah (Ceph S3): `extract` a serialized bag (tar.gz / zip) in S3 to an
-S3 destination prefix, and `verify` an already-extracted bag at an S3
-prefix. Everything streams — nothing is ever staged on local disk.
+Two-operation CLI for BagIt (RFC 8493) workflows against any
+S3-compatible object storage: `extract` a serialized bag (tar.gz / zip)
+from S3 to an S3 destination prefix, and `verify` an already-extracted
+bag at an S3 prefix. Everything streams — nothing is ever staged on
+local disk.
 
-Built for the Preservation team. Narrow scope: just these two operations.
+Built initially for UW Libraries' Preservation team against Kopah
+(Ceph RadosGW), but written to be S3-generic — AWS S3, MinIO,
+DigitalOcean Spaces, etc. all work. Narrow scope: just these two
+operations.
 
 ## Related Projects
 
-- **storage-scripts** — the broader storage tooling suite. kopah-bagit's
-  streaming-extract code is adapted from its `stream_archive/` package;
-  the Kopah client pattern (`S3CMD_CONFIG` → boto3) is copied from its
-  `shared/kopah.py`. kopah-bagit does NOT depend on storage-scripts at
-  runtime — it's a standalone repo.
+- **storage-scripts** — the broader storage tooling suite. s3-bagit's
+  streaming-extract code is adapted from its `stream_archive/` package.
+  No runtime dependency on storage-scripts.
 - **claude-meta** — cross-repo standards and best-practice guides.
 
 ## Coding Standards
 
 Follow user preferences in `~/.claude/CLAUDE.md` and cross-repo
-guides in `claude-meta/best-practices/` (`PYTHON.md`, `GIT.md`,
-`CLAUDE-FILES.md` apply here). Project-specific:
+guides in `claude-meta/best-practices/`. Project-specific:
 
-- Credentials are resolved in three steps, matching `s3cmd`'s own
-  semantics: `$S3CMD_CONFIG` → `~/.s3cfg` → `KOPAH_*` env vars. This
-  is the one place where multi-source fallback overrides the global
-  "no fallback logic" preference — see [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
-- Streaming model means **single-pass**. Don't add code that requires
+- **Credential resolution is the one place we allow multi-source
+  fallback.** Order: `$S3CMD_CONFIG` → `~/.s3cfg` → boto3 default
+  chain (with optional `$S3_ENDPOINT_URL`). This deliberately
+  overrides the global "no fallback logic" preference because the
+  chain mirrors s3cmd's own behavior. All other config values still
+  follow the strict one-canonical-location rule.
+- **Streaming model means single-pass.** Don't add code that requires
   re-reading the archive — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
-- BagIt verification collects all errors, then reports together —
+- **BagIt verification collects all errors, then reports together** —
   don't fail-fast on the first checksum mismatch; operators want the
   full picture in one run.
+- **Ceph workaround is always-on.** boto3's
+  `request_checksum_calculation="when_required"` is required for Ceph
+  RadosGW and harmless on AWS S3, so it's applied unconditionally —
+  no flag, no conditional.
 
 ## Project Structure
 
 ```
-src/kopah_bagit/
+src/s3_bagit/
     cli.py            argparse entry point (extract, verify)
     extract.py        streaming tar.gz + zip extract to S3
     verify.py         RFC 8493 manifest / tagmanifest / Payload-Oxum checks
-    kopah_client.py   boto3 client builder (S3CMD_CONFIG or KOPAH_* env)
+    s3_client.py      boto3 client builder (s3cmd config or AWS chain)
     s3_url.py         parse_s3_url, parse_s3_prefix, detect_format
     exceptions.py     ConfigError, BagError
     log_config.py     tqdm-aware console logger
 tests/                pytest + moto (no live S3 required)
 docs/
-    OPERATIONS.md     operator guide (Preservation)
+    OPERATIONS.md     operator guide
     BAGIT-SPEC.md     conformance notes
     ARCHITECTURE.md   streaming model and S3-to-S3 design
 ```
@@ -61,17 +68,17 @@ make test-cov           # tests + coverage report
 make lint               # ruff check + ruff format --check
 make format             # ruff format
 make security           # bandit + pip-audit
-make run ARGS='...'     # invoke kopah-bagit
+make run ARGS='...'     # invoke s3-bagit
 ```
 
 Direct invocation:
 
 ```
-uv run kopah-bagit extract s3://bucket/bag.tar.gz s3://bucket/extracted/
-uv run kopah-bagit verify s3://bucket/extracted/
+uv run s3-bagit extract s3://bucket/bag.tar.gz s3://bucket/extracted/
+uv run s3-bagit verify s3://bucket/extracted/
 ```
 
-Or once published, `uvx --from kopah-bagit kopah-bagit ...`.
+Or once published, `uvx --from s3-bagit s3-bagit ...`.
 
 ## Security
 
@@ -80,13 +87,13 @@ Or once published, `uvx --from kopah-bagit kopah-bagit ...`.
 - `bandit` against `src/`
 - `pip-audit` against the lockfile
 
-No secrets are stored in the repo. Kopah credentials come from
-`$S3CMD_CONFIG`, `~/.s3cfg`, or `KOPAH_*` env vars (checked in that
-order) — see `.env.example`.
+No secrets are stored in the repo. S3 credentials come from
+`$S3CMD_CONFIG`, `~/.s3cfg`, or boto3's default chain (`AWS_*` env vars,
+`~/.aws/credentials`, IAM role) — see `.env.example`.
 
 ## Cross-Repository Ideas
 
 When you discover patterns, improvements, or ideas that might apply to
 other repositories, capture them:
 
-    claude-idea kopah-bagit "Description of the pattern or improvement"
+    claude-idea s3-bagit "Description of the pattern or improvement"

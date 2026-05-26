@@ -1,13 +1,14 @@
 # Architecture
 
-How kopah-bagit moves bytes around without ever touching local disk.
+How s3-bagit moves bytes around without ever touching local disk.
 
 ## The constraint
 
 Preservation bags are large — frequently tens of GB, sometimes hundreds
-— and they live in Kopah (Ceph S3). Workstations don't reliably have
-the free disk space to download a bag, operate on it, and re-upload.
-The whole tool only makes sense if both operations stream **S3 → S3**.
+— and they live in S3 (AWS or a compatible service like Kopah/Ceph).
+Workstations don't reliably have the free disk space to download a
+bag, operate on it, and re-upload. The whole tool only makes sense
+if both operations stream **S3 → S3**.
 
 That single requirement drives most of the code shape below.
 
@@ -21,7 +22,7 @@ member at a time, and each member is pushed to S3 via
 
 ```
         ┌──────────────────────────┐
-        │ Kopah                    │
+        │ S3                       │
         │  s3://src/bag.tar.gz     │
         └────────────┬─────────────┘
                      │  get_object().Body
@@ -39,7 +40,7 @@ member at a time, and each member is pushed to S3 via
                      │
                      ▼
         ┌──────────────────────────┐
-        │ Kopah                    │
+        │ S3                       │
         │  s3://dest/bag/...       │
         └──────────────────────────┘
 ```
@@ -62,7 +63,7 @@ boto3 to its `UploadNonSeekableInputManager` path. That path uses
 chunked single-part uploads, which is what we want for streaming.
 
 The same shape is used in storage-scripts' `stream_archive` package;
-the wrappers here are isolated copies so kopah-bagit has no
+the wrappers here are isolated copies so s3-bagit has no
 storage-scripts runtime dependency.
 
 ## Verify
@@ -79,7 +80,7 @@ state (~kilobytes), not the file's contents.
 
 ```
         ┌──────────────────────────┐
-        │ Kopah                    │
+        │ S3                       │
         │  s3://bag/data/x.tif     │
         └────────────┬─────────────┘
                      │  get_object().Body
@@ -119,7 +120,7 @@ continuing past those would produce confusing cascade errors.
   bag is probably small enough to use plain `aws s3 cp` + local
   `bagit-python`.
 - **No multi-bag batching.** One bag per invocation. Operators who
-  need batch behavior can wrap kopah-bagit in a shell loop;
+  need batch behavior can wrap s3-bagit in a shell loop;
   parallelizing inside a single process would add complexity without
   buying much, because the bottleneck is S3 throughput.
 - **No subprocess shelling out to s3cmd.** Everything goes through
