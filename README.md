@@ -41,7 +41,23 @@ gymnastics.
 uv tool install git+https://github.com/borwickatuw/s3-bagit
 ```
 
-`s3-bagit` is now on your `PATH`.
+This drops the `s3-bagit` executable into uv's tool-binary directory —
+`~/.local/bin` on macOS/Linux, `%USERPROFILE%\.local\bin` on Windows —
+so you can run it as `s3-bagit` from any terminal.
+
+If your shell can't find `s3-bagit` after install, that directory
+isn't on your `PATH` yet. Fix it once with:
+
+```
+uv tool update-shell
+```
+
+then **open a new terminal window** so the updated `PATH` takes
+effect. The same step is needed on PowerShell, which inherits its
+`PATH` from the user environment at launch — re-running `uv tool
+update-shell` and starting a fresh PowerShell session does the trick.
+(`uv tool dir --bin` prints the exact directory if you'd rather add it
+to `PATH` by hand.)
 
 ### 3. Configure credentials
 

@@ -44,6 +44,8 @@ log = get_logger(__name__)
 _EXIT_OK = 0
 _EXIT_VERIFY_FAILED = 1
 _EXIT_CONFIG_ERROR = 2
+# 128 + SIGINT(2) — the conventional POSIX exit code for "killed by Ctrl-C".
+_EXIT_INTERRUPTED = 130
 
 _ISSUE_HINT = "For help, run: s3-bagit issue"
 
@@ -98,6 +100,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ls = sub.add_parser(
         "ls",
         help="List the contents of an archive in S3 without extracting it.",
+        description=(
+            "List the contents of an archive in S3 without extracting it. "
+            "Reads the archive's own member listing (tar headers / zip local "
+            "headers) — it does not consult bag-info.txt or any manifest, so "
+            "the output reflects what is actually in the archive (bagit.txt, "
+            "manifests, any wrapping top-level directory, and stowaways like "
+            "__MACOSX/ or .DS_Store)."
+        ),
     )
     p_ls.add_argument(
         "archive_url",
@@ -247,13 +257,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     setup_console(logging.DEBUG if args.verbose else logging.INFO)
 
-    # `config` and `issue` don't need (and shouldn't require) S3 creds.
-    if args.command == "config":
-        return _cmd_config(args)
-    if args.command == "issue":
-        return _cmd_issue(args)
-
     try:
+        # `config` and `issue` don't need (and shouldn't require) S3 creds.
+        if args.command == "config":
+            return _cmd_config(args)
+        if args.command == "issue":
+            return _cmd_issue(args)
+
         client = load_client()
         if args.command == "extract":
             return _cmd_extract(args, client)
@@ -261,6 +271,10 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_verify(args, client)
         if args.command == "ls":
             return _cmd_ls(args, client)
+    except KeyboardInterrupt:
+        # Operator hit Ctrl-C — exit cleanly instead of dumping a traceback.
+        print("\nCancelled.", file=sys.stderr)
+        return _EXIT_INTERRUPTED
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         print(_ISSUE_HINT, file=sys.stderr)

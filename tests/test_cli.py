@@ -223,6 +223,22 @@ class TestConfigCommandDispatch:
         assert called["run_config"] is True
 
 
+class TestKeyboardInterruptHandling:
+    """Ctrl-C inside a subcommand should exit cleanly, not dump a traceback."""
+
+    def test_config_ctrl_c_exits_130(self, monkeypatch, capsys):
+        def _raise(*_a, **_kw):
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr("s3_bagit.cli.run_config", _raise)
+
+        rc = main(["config"])
+
+        captured = capsys.readouterr()
+        assert rc == 130
+        assert "Cancelled." in captured.err
+
+
 class TestErrorHintAppended:
     def test_config_error_includes_issue_hint(self, patched_client, capsys):
         rc = main(["extract", "s3://src-bucket/file.rar", "s3://dest-bucket/out/"])

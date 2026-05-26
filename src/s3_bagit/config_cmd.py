@@ -6,18 +6,19 @@ s3cmd-compatible INI file. The same ``[default]`` section is what
 running ``s3-bagit config`` is enough to bootstrap the tool on a fresh
 workstation without installing s3cmd.
 
-Reads from stdin via :func:`input` and :func:`getpass.getpass` so it works
-in any terminal (no third-party prompt library, no curses).
+Uses `questionary <https://github.com/tmbo/questionary>`_ for prompts so
+the experience is consistent across terminals (arrow-key Y/N, masked
+password entry, clean Ctrl-C cancellation).
 """
 
 import configparser
 import contextlib
-import getpass
 import os
 import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+import questionary
 from botocore.exceptions import BotoCoreError, ClientError
 
 from s3_bagit.log_config import get_logger
@@ -28,19 +29,28 @@ log = get_logger(__name__)
 _DEFAULT_PATH = "~/.s3cfg"
 
 
-def _prompt(label: str, *, default: str = "") -> str:
-    """Wrap :func:`input` with a ``[default]`` suffix when one is supplied."""
-    suffix = f" [{default}]" if default else ""
-    answer = input(f"{label}{suffix}: ").strip()
-    return answer or default
+def _ask_text(question: str, default: str = "") -> str:
+    """Ask for free-text input. Ctrl-C surfaces as ``KeyboardInterrupt``."""
+    answer = questionary.text(question, default=default).ask()
+    if answer is None:
+        raise KeyboardInterrupt
+    return answer.strip()
 
 
-def _confirm(label: str, *, default: bool = False) -> bool:
-    hint = "[y/N]" if not default else "[Y/n]"
-    answer = input(f"{label} {hint}: ").strip().lower()
-    if not answer:
-        return default
-    return answer in {"y", "yes"}
+def _ask_password(question: str) -> str:
+    """Ask for a hidden-input secret. Ctrl-C surfaces as ``KeyboardInterrupt``."""
+    answer = questionary.password(question).ask()
+    if answer is None:
+        raise KeyboardInterrupt
+    return answer.strip()
+
+
+def _ask_confirm(question: str, *, default: bool = False) -> bool:
+    """Ask a Y/N question. Ctrl-C surfaces as ``KeyboardInterrupt``."""
+    answer = questionary.confirm(question, default=default).ask()
+    if answer is None:
+        raise KeyboardInterrupt
+    return answer
 
 
 def _endpoint_to_host_base(endpoint: str) -> str:
@@ -54,6 +64,21 @@ def _endpoint_to_host_base(endpoint: str) -> str:
 
 def _resolve_path(raw: str) -> Path:
     return Path(os.path.expanduser(raw)).resolve()
+
+
+def _read_existing_host_base(cfg_path: Path) -> str | None:
+    """Best-effort: read ``host_base`` from an existing s3cmd INI.
+
+    Returns ``None`` if the file isn't parseable as an s3cmd config or
+    doesn't carry a ``host_base`` — both are fine, the caller still
+    surfaces "config exists" to the operator.
+    """
+    try:
+        parser = configparser.ConfigParser()
+        parser.read(cfg_path, encoding="utf-8")
+        return parser["default"].get("host_base") or None
+    except (configparser.Error, KeyError, OSError, UnicodeDecodeError):
+        return None
 
 
 def _write_config(path: Path, *, access_key: str, secret_key: str, host_base: str) -> None:
@@ -115,27 +140,40 @@ def _shell_export_hint(cfg_path: Path) -> None:
 def run_config() -> int:
     """Drive the interactive prompts; return the CLI exit code."""
     print("Configure S3 credentials for s3-bagit.")
-    print("Press Enter to accept the default in [brackets]; blank skips optional fields.")
-    print()
 
-    endpoint = _prompt(
+    default_path = _resolve_path(_DEFAULT_PATH)
+    if default_path.exists():
+        existing_host = _read_existing_host_base(default_path)
+        if existing_host:
+            question = (
+                f"An s3cmd config already exists at {default_path} "
+                f"pointing to {existing_host}. Replace it?"
+            )
+        else:
+            question = f"An s3cmd config already exists at {default_path}. Replace it?"
+        if not _ask_confirm(question, default=False):
+            print("Keeping existing configuration; no changes written.")
+            return 0
+
+    endpoint = _ask_text(
         "S3 endpoint URL (e.g. https://s3.kopah.uw.edu; blank for AWS S3)",
     )
+
     access_key = ""
     while not access_key:
-        access_key = _prompt("Access key")
+        access_key = _ask_text("Access key")
         if not access_key:
             print("Access key is required.")
     secret_key = ""
     while not secret_key:
-        secret_key = getpass.getpass("Secret key (hidden): ").strip()
+        secret_key = _ask_password("Secret key")
         if not secret_key:
             print("Secret key is required.")
 
-    raw_path = _prompt("Config file path", default=_DEFAULT_PATH)
+    raw_path = _ask_text("Config file path", default=_DEFAULT_PATH)
     cfg_path = _resolve_path(raw_path)
 
-    if cfg_path.exists() and not _confirm(
+    if cfg_path.exists() and not _ask_confirm(
         f"File {cfg_path} already exists. Overwrite?", default=False
     ):
         print("Aborted; no changes written.")

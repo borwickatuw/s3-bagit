@@ -9,6 +9,7 @@ authors = [{ name = "University of Washington Libraries" }]
 dependencies = [
     "boto3>=1.35",
     "python-dotenv>=1.0",
+    "questionary>=2.0",
     "stream-unzip>=0.0.71",
     "tqdm>=4.67",
 ]
