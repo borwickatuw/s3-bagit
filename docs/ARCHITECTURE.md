@@ -161,6 +161,62 @@ multiple manifest algorithms are present — each manifest is checked
 in its own pass, because the algorithm is fixed per pass. For the
 typical case of one manifest (`sha256`), that's one pass.
 
+## Verify-against
+
+`verify-against` compares the files under an S3 prefix to the
+manifests inside a *serialized* bag, without ever extracting it. It's
+the cheapest way to confirm that a flat directory still matches its
+archival `.tar.gz` — you avoid paying for a second copy on S3.
+
+Mechanically it stitches together the streaming patterns from
+`extract` and `verify`:
+
+```
+        ┌──────────────────────────┐
+        │ S3 bag.tar.gz            │
+        └────────────┬─────────────┘
+                     │  one full stream
+                     ▼
+        ┌──────────────────────────┐
+        │ tarfile r|gz             │
+        │  capture tag-file bytes  │
+        │  drain payload bytes     │
+        └────────────┬─────────────┘
+                     │  manifest text(s) + bag-info.txt
+                     ▼
+        ┌──────────────────────────┐
+        │ S3 target_prefix/        │
+        │  list_objects_v2         │
+        └────────────┬─────────────┘
+                     │  per file
+                     ▼
+        ┌──────────────────────────┐
+        │ get_object().Body        │
+        │  → all required hashers  │
+        │    (one read per file)   │
+        └────────────┬─────────────┘
+                     │  hexdigests
+                     ▼
+        ┌──────────────────────────┐
+        │ compare to manifest line │
+        │ collect mismatches       │
+        └──────────────────────────┘
+```
+
+Two structural notes:
+
+- **Bag root detection.** `verify-against` finds the single
+  `bagit.txt` member in the archive and treats everything before its
+  final segment as the wrapping directory (`""` if `bagit.txt` is at
+  the archive top). Tag-file names are normalized against that root
+  so a wrapped bag (`my-bag/manifest-sha256.txt`, what `create-bag`
+  produces) and an unwrapped one parse identically.
+- **Multi-algorithm bags are still single-pass per file.** For a bag
+  with both `manifest-sha256.txt` and `manifest-sha512.txt`, each
+  target file is read once and fed through both hashers via
+  `_stream_hash_multi`. We do *not* re-issue `get_object` per
+  algorithm.
+
 ## Why "collect all errors" instead of fail-fast
 
 When Preservation has a bag that doesn't verify, they want to know

@@ -8,6 +8,8 @@ object storage:
 - `extract` — serialized bag (tar.gz / zip) in S3 → extracted bag at
   an S3 prefix.
 - `verify` — check an already-extracted bag at an S3 prefix.
+- `verify-against` — check the files at an S3 prefix against the
+  manifests inside a serialized bag (without extracting the bag).
 - `create-bag` — S3 prefix → serialized BagIt `.tar.gz` at an S3 key.
 
 Everything streams — nothing is ever staged on local disk.
@@ -48,9 +50,10 @@ guides in `claude-meta/best-practices/`. Project-specific:
 
 ```
 src/s3_bagit/
-    cli.py            argparse entry point (extract, verify, create-bag, ls, config, issue)
+    cli.py            argparse entry point (extract, verify, verify-against, create-bag, ls, config, issue)
     extract.py        streaming tar.gz + zip extract to S3
     verify.py         RFC 8493 manifest / tagmanifest / Payload-Oxum checks
+    verify_against.py stream serialized bag once, hash target prefix once-per-file (multi-hasher)
     create_bag.py     streaming S3-prefix → BagIt .tar.gz (single-pass, tag files trailing)
     ls.py             stream-list an archive's members
     s3_client.py      boto3 client builder (s3cmd config or AWS chain)

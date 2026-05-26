@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from s3_bagit.cli import main
+from s3_bagit.create_bag import create_bag
 
 from .conftest import build_tar_gz, build_zip, make_bag_files, upload_bag_to_prefix
 
@@ -136,6 +137,80 @@ class TestVerifyGuard:
         rc = main(["verify", "s3://dest-bucket/some-bag/"])
         assert rc == 1  # Verify failed, not config error.
         assert "RESULT: INVALID" in capsys.readouterr().out
+
+
+class TestVerifyAgainstCommand:
+    def _put_payload_and_bag(self, client, payload: dict[str, bytes]) -> None:
+        """Stage matching payload at src/ + a bag.tar.gz at bags/bag.tar.gz."""
+        for rel, content in payload.items():
+            client.put_object(Bucket="src-bucket", Key=f"src/{rel}", Body=content)
+        create_bag(
+            client,
+            "src-bucket",
+            "src/",
+            "dest-bucket",
+            "bags/bag.tar.gz",
+            bag_name="my-bag",
+        )
+
+    def test_matching_target_returns_valid(self, patched_client, capsys):
+        self._put_payload_and_bag(patched_client, {"a.txt": b"alpha\n"})
+
+        rc = main(
+            [
+                "verify-against",
+                "s3://dest-bucket/bags/bag.tar.gz",
+                "s3://src-bucket/src/",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0, out
+        assert "RESULT: VALID" in out
+        assert "Target: s3://src-bucket/src/" in out
+
+    def test_mismatching_target_returns_invalid(self, patched_client, capsys):
+        self._put_payload_and_bag(patched_client, {"a.txt": b"alpha\n"})
+        # Corrupt the target.
+        patched_client.put_object(Bucket="src-bucket", Key="src/a.txt", Body=b"corrupted")
+
+        rc = main(
+            [
+                "verify-against",
+                "s3://dest-bucket/bags/bag.tar.gz",
+                "s3://src-bucket/src/",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 1, out
+        assert "RESULT: INVALID" in out
+
+    def test_data_segment_in_target_emits_warning(self, patched_client, capsys):
+        self._put_payload_and_bag(patched_client, {"a.txt": b"alpha\n"})
+        # Re-upload the file under a /data/-shaped prefix.
+        patched_client.put_object(Bucket="src-bucket", Key="bag/data/a.txt", Body=b"alpha\n")
+
+        # rc may be 0 or 1 depending on file alignment; the point is the warning.
+        main(
+            [
+                "verify-against",
+                "s3://dest-bucket/bags/bag.tar.gz",
+                "s3://src-bucket/bag/data/",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert "Warnings" in out
+        assert "/data/" in out
+
+    def test_bad_archive_url_exits_2(self, patched_client, capsys):
+        rc = main(
+            [
+                "verify-against",
+                "s3://dest-bucket/bags/bag.rar",
+                "s3://src-bucket/src/",
+            ]
+        )
+        assert rc == 2
+        assert "Cannot detect archive format" in capsys.readouterr().err
 
 
 class TestCreateBagCommand:

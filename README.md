@@ -6,12 +6,13 @@ Works against AWS S3, UW Libraries' Kopah, MinIO, DigitalOcean Spaces,
 Backblaze B2, Wasabi — anything that speaks S3.
 
 ```
-s3-bagit config                                       # interactive credentials setup
-s3-bagit extract    <archive_url> <dest_url>          # serialized bag in S3 → extracted bag in S3
-s3-bagit create-bag <src_url>     <dest_archive_url>  # S3 prefix → BagIt .tar.gz in S3
-s3-bagit verify     <bag_url>                         # check an already-extracted bag at an S3 prefix
-s3-bagit ls         <archive_url>                     # peek inside an archive without extracting
-s3-bagit issue      ["short summary"]                 # open a pre-filled GitHub issue
+s3-bagit config                                          # interactive credentials setup
+s3-bagit extract        <archive_url> <dest_url>         # serialized bag in S3 → extracted bag in S3
+s3-bagit create-bag     <src_url>     <dest_archive_url> # S3 prefix → BagIt .tar.gz in S3
+s3-bagit verify         <bag_url>                        # check an already-extracted bag at an S3 prefix
+s3-bagit verify-against <archive_url> <target_url>       # check files at a prefix vs. the manifests in a serialized bag
+s3-bagit ls             <archive_url>                    # peek inside an archive without extracting
+s3-bagit issue          ["short summary"]                # open a pre-filled GitHub issue
 ```
 
 > Bookmark `https://github.com/borwickatuw/s3-bagit#readme` — this
@@ -141,6 +142,34 @@ s3-bagit verify s3://test-bucket/path/to/extracted/bag
 
 Reports every problem in one pass — checksum mismatches, missing files,
 manifest/oxum disagreements — instead of stopping at the first one.
+
+### Verify a flat directory against a serialized bag
+
+```
+s3-bagit verify-against \
+    s3://test-bucket/path/to/bag.tgz \
+    s3://test-bucket/path/to/source-dir/
+```
+
+Use this when you want to confirm that a directory of files still
+matches its archival `.tar.gz`, without extracting the bag. The target
+prefix is treated as **flat** (the same shape `create-bag` consumes):
+the bag's manifest entry `data/foo.txt` is checked against
+`s3://test-bucket/path/to/source-dir/foo.txt`. Errors are collected
+and reported together — missing files, mismatched checksums, target
+files not listed in any manifest, Payload-Oxum disagreement — and
+the exit code is 0 for `RESULT: VALID` and 1 for `RESULT: INVALID`,
+same as `verify`.
+
+**Cost:** the bag's `.tar.gz` is streamed end-to-end (tar has no
+index, so we read the whole archive to find the manifest), and every
+file under the target prefix is stream-hashed once. Multi-algorithm
+bags (e.g. sha256 + sha512) still cost a single read per target file
+because every hasher is fed in one pass.
+
+If your target prefix's URL contains `/data/`, `verify-against` will
+emit a warning — that shape almost always means you have an extracted
+bag and should be using plain `verify` instead.
 
 ### Look inside an archive without extracting
 

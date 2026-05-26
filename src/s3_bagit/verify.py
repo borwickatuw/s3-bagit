@@ -43,6 +43,7 @@ class BagVerifyResult:
     """Outcome of a verify run. Empty error lists mean the bag is valid."""
 
     bag_url: str
+    target_url: str | None = None
     declared_version: str | None = None
     manifest_algorithms: list[str] = field(default_factory=list)
     tagmanifest_algorithms: list[str] = field(default_factory=list)

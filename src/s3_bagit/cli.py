@@ -9,6 +9,11 @@ Subcommands:
 
   * ``verify`` — verify an already-extracted bag at an S3 prefix.
 
+  * ``verify-against`` — verify that the files under an S3 prefix
+    match the manifests inside a serialized bag, without extracting
+    the bag. Useful for confirming that a flat directory still
+    matches its archival ``.tar.gz``.
+
   * ``create-bag`` — stream the objects under an S3 prefix into a
     serialized BagIt ``.tar.gz`` at a destination S3 key.
 
@@ -41,6 +46,7 @@ from s3_bagit.ls import list_archive
 from s3_bagit.s3_client import load_client
 from s3_bagit.s3_url import detect_format, parse_s3_prefix, parse_s3_url
 from s3_bagit.verify import BagVerifyResult, verify_bag
+from s3_bagit.verify_against import verify_against
 
 log = get_logger(__name__)
 
@@ -105,6 +111,30 @@ def _build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument(
         "bag_url",
         help="Bag root prefix URL, e.g. s3://my-bucket/extracted/bag/",
+    )
+
+    p_verify_against = sub.add_parser(
+        "verify-against",
+        help=(
+            "Check the files under an S3 prefix against the manifests "
+            "inside a serialized bag, without extracting the bag."
+        ),
+        description=(
+            "Stream a serialized bag (tar/tar.gz/tar.bz2/tar.xz/zip) once "
+            "to read its manifest(s), then stream-hash each file under "
+            "the target prefix and compare. The target is treated as "
+            "flat — manifest entries 'data/<rel>' map to "
+            "'<target_prefix>/<rel>'. To check an already-extracted bag "
+            "(layout includes data/), use `verify` instead."
+        ),
+    )
+    p_verify_against.add_argument(
+        "archive_url",
+        help="Source bag archive URL, e.g. s3://my-bucket/bags/bag.tar.gz",
+    )
+    p_verify_against.add_argument(
+        "target_url",
+        help="Target prefix URL whose files should match the bag's payload, e.g. s3://my-bucket/source-dir/",
     )
 
     p_create = sub.add_parser(
@@ -196,6 +226,8 @@ def _build_parser() -> argparse.ArgumentParser:
 def _print_verify_report(result: BagVerifyResult) -> None:
     print()
     print(f"Bag: {result.bag_url}")
+    if result.target_url:
+        print(f"Target: {result.target_url}")
     if result.declared_version:
         print(f"  BagIt-Version: {result.declared_version}")
     if result.manifest_algorithms:
@@ -289,6 +321,28 @@ def _cmd_verify(args: argparse.Namespace, client) -> int:
     return _EXIT_OK if result.ok else _EXIT_VERIFY_FAILED
 
 
+def _cmd_verify_against(args: argparse.Namespace, client) -> int:
+    archive_bucket, archive_key = parse_s3_url(args.archive_url)
+    if not archive_key:
+        raise ConfigError(f"Archive URL needs a key: {args.archive_url!r}")
+    archive_fmt = detect_format(args.archive_url)
+    target_bucket, target_prefix = parse_s3_prefix(args.target_url)
+
+    result = verify_against(
+        client,
+        archive_bucket,
+        archive_key,
+        archive_fmt,
+        target_bucket,
+        target_prefix,
+        archive_url=args.archive_url,
+        target_url=args.target_url,
+        verbose=args.verbose,
+    )
+    _print_verify_report(result)
+    return _EXIT_OK if result.ok else _EXIT_VERIFY_FAILED
+
+
 _BAG_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz")
 
 
@@ -376,6 +430,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_extract(args, client)
         if args.command == "verify":
             return _cmd_verify(args, client)
+        if args.command == "verify-against":
+            return _cmd_verify_against(args, client)
         if args.command == "create-bag":
             return _cmd_create_bag(args, client)
         if args.command == "ls":
