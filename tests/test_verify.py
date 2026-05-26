@@ -4,6 +4,7 @@ import hashlib
 
 import pytest
 
+from s3_bagit import verify as verify_mod
 from s3_bagit.verify import verify_bag
 
 from .conftest import make_bag_files, upload_bag_to_prefix
@@ -38,6 +39,93 @@ class TestValidBags:
         result = verify_bag(s3_client, "dest-bucket", "bag/")
         assert result.ok, result.errors
         assert result.manifest_algorithms == ["md5", "sha256", "sha512"]
+
+
+class TestSinglePassMultiHash:
+    """Verify reads each payload file once regardless of manifest count."""
+
+    def test_multi_algorithm_bag_reads_each_file_once(self, s3_client, good_bag_payload):
+        files = make_bag_files(good_bag_payload, algorithms=("sha256", "sha512"))
+        _upload(s3_client, "dest-bucket", "bag/", files)
+
+        gets: dict[str, int] = {}
+        real_get = s3_client.get_object
+
+        def counting_get(**kwargs):
+            gets[kwargs["Key"]] = gets.get(kwargs["Key"], 0) + 1
+            return real_get(**kwargs)
+
+        s3_client.get_object = counting_get
+        result = verify_bag(s3_client, "dest-bucket", "bag/")
+
+        assert result.ok, result.errors
+        payload_keys = [k for k in gets if "/data/" in k]
+        assert payload_keys, "expected at least one /data/ GET"
+        for key in payload_keys:
+            assert gets[key] == 1, f"{key} was GET {gets[key]} times, expected 1"
+
+    def test_overlapping_but_not_identical_manifest_sets(self, s3_client, monkeypatch):
+        """Per-file fan-out uses only the algorithms that listed each file.
+
+        ``manifest-sha256.txt`` covers ``{a, b}``; ``manifest-sha512.txt`` covers
+        ``{a, c}``. ``b`` must never be hashed with sha512 and ``c`` must
+        never be hashed with sha256. (The bag itself is RFC-noncompliant
+        because each payload file isn't in *every* manifest — covered by
+        the existing "present but not listed" check; this test asserts
+        the orthogonal per-file algorithm-subset invariant.)
+        """
+        payload = {
+            "a.txt": b"alpha\n",
+            "b.txt": b"beta\n",
+            "c.txt": b"gamma\n",
+        }
+        files: dict[str, bytes] = {}
+        for rel, content in payload.items():
+            files["data/" + rel] = content
+        files["bagit.txt"] = b"BagIt-Version: 1.0\nTag-File-Character-Encoding: UTF-8\n"
+        oxum_octets = sum(len(b) for b in payload.values())
+        files["bag-info.txt"] = (
+            f"Bagging-Date: 2026-05-22\nPayload-Oxum: {oxum_octets}.{len(payload)}\n"
+        ).encode("utf-8")
+
+        sha256_files = ("a.txt", "b.txt")
+        sha512_files = ("a.txt", "c.txt")
+        files["manifest-sha256.txt"] = "".join(
+            f"{hashlib.sha256(payload[r]).hexdigest()}  data/{r}\n" for r in sha256_files
+        ).encode("utf-8")
+        files["manifest-sha512.txt"] = "".join(
+            f"{hashlib.sha512(payload[r]).hexdigest()}  data/{r}\n" for r in sha512_files
+        ).encode("utf-8")
+
+        for algo in ("sha256", "sha512"):
+            lines = []
+            for rel, content in files.items():
+                if rel.startswith("data/") or rel.startswith("tagmanifest-"):
+                    continue
+                hasher = hashlib.new(algo)
+                hasher.update(content)
+                lines.append(f"{hasher.hexdigest()}  {rel}\n")
+            files[f"tagmanifest-{algo}.txt"] = "".join(lines).encode("utf-8")
+
+        _upload(s3_client, "dest-bucket", "bag/", files)
+
+        algorithms_used: dict[str, set[str]] = {}
+        real_stream = verify_mod.stream_hash_object
+
+        def recording_stream(client, bucket, key, algorithms, **kw):
+            algorithms_used.setdefault(key, set()).update(algorithms)
+            return real_stream(client, bucket, key, algorithms, **kw)
+
+        monkeypatch.setattr(verify_mod, "stream_hash_object", recording_stream)
+        result = verify_bag(s3_client, "dest-bucket", "bag/")
+
+        assert algorithms_used["bag/data/a.txt"] == {"sha256", "sha512"}
+        assert algorithms_used["bag/data/b.txt"] == {"sha256"}
+        assert algorithms_used["bag/data/c.txt"] == {"sha512"}
+        # Only errors should be the "missing from manifest X" ones — no
+        # checksum mismatches, no "file listed but not present" errors.
+        for err in result.errors:
+            assert "present but not listed" in err, err
 
 
 class TestStructuralFailures:

@@ -112,20 +112,6 @@ def _list_bag_objects(client, bucket: str, prefix: str) -> dict[str, dict[str, A
     return out
 
 
-def _stream_hash(client, bucket: str, key: str, algorithm: str) -> str:
-    """Stream-download s3://bucket/key and return its lowercase hex digest.
-
-    One-algorithm-at-a-time wrapper around
-    :func:`s3_archive.hashing.stream_hash_object`. Matches the
-    per-manifest call shape used by :func:`_verify_manifest`: each
-    payload manifest re-reads the file with its own algorithm. That's
-    intentionally not optimized — a multi-algorithm bag's verify cost
-    scales linearly with manifest count, but the read code path stays
-    simple. See verify_against for the single-pass multi-hash variant.
-    """
-    return stream_hash_object(client, bucket, key, (algorithm,))[algorithm]
-
-
 def _read_text(client, bucket: str, key: str) -> str:
     body = client.get_object(Bucket=bucket, Key=key)["Body"].read()
     return body.decode("utf-8")
@@ -179,41 +165,65 @@ def _check_payload_oxum(
         )
 
 
-def _verify_manifest(
+def _build_expected_map(
+    manifests_by_algo: dict[str, dict[str, str]],
+) -> dict[str, dict[str, str]]:
+    """Union the per-algorithm manifests into ``{rel: {algo: expected}}``.
+
+    Preserves the RFC 8493 case where different manifests cover
+    overlapping-but-not-identical file sets: a file only listed in
+    ``manifest-sha256.txt`` ends up with ``{"sha256": ...}`` and is
+    hashed with sha256 only, never sha512.
+    """
+    out: dict[str, dict[str, str]] = {}
+    for algo, entries in manifests_by_algo.items():
+        for rel, expected in entries.items():
+            out.setdefault(rel, {})[algo] = expected.lower()
+    return out
+
+
+def _verify_files_single_pass(
     client,
     bucket: str,
-    bag_prefix: str,
-    manifest_rel: str,
-    algorithm: str,
+    expected_map: dict[str, dict[str, str]],
     objects: dict[str, dict[str, Any]],
     result: BagVerifyResult,
     *,
     payload: bool,
 ) -> set[str]:
-    """Verify a single manifest (or tagmanifest) file. Returns the set of paths it covers."""
-    text = _read_text(client, bucket, bag_prefix + manifest_rel)
-    entries = _parse_manifest_text(text)
+    """Hash each file once, fanning out to every algorithm that listed it.
+
+    One S3 GET per file regardless of how many manifest algorithms the
+    bag carries.
+    """
     covered: set[str] = set()
     label = "manifest" if payload else "tagmanifest"
-
-    for rel, expected in entries.items():
+    for rel, expected_by_algo in sorted(expected_map.items()):
         covered.add(rel)
         if payload and not rel.startswith("data/"):
-            result.fail(f"{manifest_rel}: payload manifest entry outside data/: {rel!r}")
+            for algo in expected_by_algo:
+                result.fail(f"manifest-{algo}.txt: payload manifest entry outside data/: {rel!r}")
             continue
         if not payload and rel.startswith("data/"):
-            result.fail(f"{manifest_rel}: tag manifest must not list payload files: {rel!r}")
+            for algo in expected_by_algo:
+                result.fail(
+                    f"tagmanifest-{algo}.txt: tag manifest must not list payload files: {rel!r}"
+                )
             continue
         if rel not in objects:
-            result.fail(f"{manifest_rel}: file listed but not present in bag: {rel!r}")
+            for algo in expected_by_algo:
+                result.fail(f"{label}-{algo}.txt: file listed but not present in bag: {rel!r}")
             continue
-        actual = _stream_hash(client, bucket, objects[rel]["Key"], algorithm)
-        if actual.lower() != expected.lower():
-            result.fail(
-                f"{manifest_rel}: checksum mismatch for {rel!r}: expected {expected}, got {actual}"
-            )
-        else:
-            log.debug("%s ok (%s) %s", label, algorithm, rel)
+        actuals = stream_hash_object(client, bucket, objects[rel]["Key"], expected_by_algo.keys())
+        for algo, expected in expected_by_algo.items():
+            actual = actuals[algo].lower()
+            if actual != expected:
+                result.fail(
+                    f"{label}-{algo}.txt: checksum mismatch for {rel!r}: "
+                    f"expected {expected}, got {actual}"
+                )
+            else:
+                log.debug("%s ok (%s) %s", label, algo, rel)
     return covered
 
 
@@ -272,38 +282,42 @@ def verify_bag(client, bucket: str, bag_prefix: str) -> BagVerifyResult:
     result.manifest_algorithms = sorted(manifests)
     result.tagmanifest_algorithms = sorted(tagmanifests)
 
-    # Verify each payload manifest.
-    payload_covered: set[str] = set()
+    # Parse every manifest exactly once into {algo: {rel: expected}}.
+    manifests_by_algo: dict[str, dict[str, str]] = {}
     for algo, rel in manifests.items():
         try:
-            covered = _verify_manifest(
-                client, bucket, bag_prefix, rel, algo, objects, result, payload=True
+            manifests_by_algo[algo] = _parse_manifest_text(
+                _read_text(client, bucket, bag_prefix + rel)
             )
         except BagError as exc:
             result.fail(f"{rel}: {exc}")
-            continue
-        payload_covered |= covered
+
+    tagmanifests_by_algo: dict[str, dict[str, str]] = {}
+    for algo, rel in tagmanifests.items():
+        try:
+            tagmanifests_by_algo[algo] = _parse_manifest_text(
+                _read_text(client, bucket, bag_prefix + rel)
+            )
+        except BagError as exc:
+            result.fail(f"{rel}: {exc}")
+
+    # Verify all payload files in a single pass per file.
+    payload_expected = _build_expected_map(manifests_by_algo)
+    _verify_files_single_pass(client, bucket, payload_expected, objects, result, payload=True)
 
     # Every data/ file must be covered by every payload manifest.
     data_files = {rel for rel in objects if rel.startswith("data/")}
     if not data_files:
         result.fail("No payload files found under data/ — bag has no content")
-    for rel in manifests.values():
-        try:
-            entries_text = _read_text(client, bucket, bag_prefix + rel)
-            entries = set(_parse_manifest_text(entries_text))
-        except BagError:
-            continue
-        missing_in_manifest = data_files - entries
+    for algo, entries in manifests_by_algo.items():
+        missing_in_manifest = data_files - set(entries)
+        manifest_rel = manifests[algo]
         for path in sorted(missing_in_manifest):
-            result.fail(f"{rel}: payload file present but not listed: {path!r}")
+            result.fail(f"{manifest_rel}: payload file present but not listed: {path!r}")
 
-    # Verify each tagmanifest.
-    for algo, rel in tagmanifests.items():
-        try:
-            _verify_manifest(client, bucket, bag_prefix, rel, algo, objects, result, payload=False)
-        except BagError as exc:
-            result.fail(f"{rel}: {exc}")
+    # Verify all tag files in a single pass per file.
+    tag_expected = _build_expected_map(tagmanifests_by_algo)
+    _verify_files_single_pass(client, bucket, tag_expected, objects, result, payload=False)
 
     # Payload-Oxum from bag-info.txt.
     sizes = {rel: meta["Size"] for rel, meta in objects.items()}
