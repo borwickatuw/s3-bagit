@@ -25,6 +25,10 @@ import tarfile
 import threading
 import time
 
+from s3_archive.hashing import HashingTap, body_chunks
+from s3_archive.iter import PipeReader
+from s3_archive.list import list_objects
+
 from s3_bagit import __version__
 from s3_bagit.exceptions import BagError
 from s3_bagit.log_config import get_logger
@@ -43,85 +47,6 @@ def _encode_manifest_path(path: str) -> str:
     for char, escape in _PATH_ESCAPES:
         path = path.replace(char, escape)
     return path
-
-
-class _PipeReader:
-    """Wrap an ``os.fdopen`` read-end so ``boto3.upload_fileobj`` accepts it.
-
-    Same shape as ``extract._NonSeekableReader`` — boto3 dispatches its
-    upload strategy on ``readable()`` / ``seekable()`` and the bare file
-    object from ``os.fdopen`` doesn't expose those in a way boto3 likes
-    for non-seekable streams.
-    """
-
-    def __init__(self, fobj) -> None:
-        self._fobj = fobj
-
-    def read(self, size: int = -1) -> bytes:
-        if size is None or size < 0:
-            return self._fobj.read()
-        # Pipes can return short reads; loop until we have `size` bytes
-        # or hit EOF. boto3's multipart uploader tolerates short reads,
-        # but filling to the requested size keeps per-part sizing tight.
-        chunks: list[bytes] = []
-        remaining = size
-        while remaining > 0:
-            chunk = self._fobj.read(remaining)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        return b"".join(chunks)
-
-    def readable(self) -> bool:
-        return True
-
-    def seekable(self) -> bool:
-        return False
-
-
-class _HashingBody:
-    """Read-once wrapper over an S3 ``StreamingBody`` that hashes as it reads.
-
-    ``tarfile.addfile(info, fileobj)`` reads exactly ``info.size`` bytes
-    from ``fileobj``. We tee each chunk into a ``hashlib`` hasher on the
-    way through, so a single S3 GET produces both the tar member bytes
-    and the manifest checksum without a second pass.
-    """
-
-    def __init__(self, body, hasher) -> None:
-        self._body = body
-        self._hasher = hasher
-
-    def read(self, size: int = -1) -> bytes:
-        chunk = self._body.read(size if size is not None and size >= 0 else None)
-        if chunk:
-            self._hasher.update(chunk)
-        return chunk
-
-
-def _list_payload_objects(client, bucket: str, prefix: str) -> list[dict]:
-    """Return ``[{'Key': ..., 'Size': ..., 'RelativePath': ...}, ...]`` for objects under *prefix*.
-
-    Skips directory markers (zero-byte keys ending in ``/``). The
-    *RelativePath* is the key with *prefix* stripped — that becomes the
-    portion after ``data/`` in the bag.
-    """
-    paginator = client.get_paginator("list_objects_v2")
-    out: list[dict] = []
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        for obj in page.get("Contents", []):
-            key = obj["Key"]
-            if obj["Size"] == 0 and key.endswith("/"):
-                continue
-            rel = key.removeprefix(prefix)
-            if not rel:
-                continue
-            out.append({"Key": key, "Size": obj["Size"], "RelativePath": rel})
-    # Stable order keeps the manifest deterministic, which matters for
-    # operators diffing two runs.
-    out.sort(key=lambda o: o["RelativePath"])
-    return out
 
 
 def _make_tarinfo(name: str, size: int, mtime: int) -> tarfile.TarInfo:
@@ -212,7 +137,12 @@ def create_bag(
         raise BagError(f"Unknown hash algorithm {algorithm!r}: {exc}") from exc
 
     bag_info = bag_info or []
-    objects = _list_payload_objects(client, src_bucket, src_prefix)
+    # ``list_objects`` sorts by Key, which for a flat prefix is order-
+    # equivalent to sorting by RelativePath (RelativePath = Key with
+    # the same constant prefix stripped). Either way the manifest is
+    # byte-deterministic across runs, which matters for operators
+    # diffing two bag creations.
+    objects = list_objects(client, src_bucket, src_prefix, sort=True)
     if not objects:
         raise BagError(f"Source prefix s3://{src_bucket}/{src_prefix} is empty; nothing to bag.")
 
@@ -232,7 +162,7 @@ def create_bag(
     def _upload() -> None:
         try:
             with os.fdopen(rfd, "rb", buffering=_PIPE_READ_CHUNK) as r:
-                client.upload_fileobj(_PipeReader(r), dest_bucket, dest_key)
+                client.upload_fileobj(PipeReader(r), dest_bucket, dest_key)
         except BaseException as exc:  # noqa: BLE001 — re-raised on main thread
             upload_error.append(exc)
 
@@ -258,12 +188,15 @@ def create_bag(
                 if verbose:
                     log.info("  %s (%d bytes)", rel, size)
                 body = client.get_object(Bucket=src_bucket, Key=obj["Key"])["Body"]
-                hasher = hashlib.new(algorithm)
-                hashing_body = _HashingBody(body, hasher)
+                # HashingTap tees bytes into tar.addfile (which reads
+                # exactly tarinfo.size bytes) and into a single-
+                # algorithm hasher in parallel. One S3 GET produces
+                # both the tar member bytes and the manifest checksum.
+                tap = HashingTap(body_chunks(body), algorithms=(algorithm,))
                 member_name = f"{bag_name}/data/{rel}"
                 tarinfo = _make_tarinfo(member_name, size, mtime)
-                tar.addfile(tarinfo, hashing_body)
-                manifest_entries.append((hasher.hexdigest(), f"data/{rel}"))
+                tar.addfile(tarinfo, tap)
+                manifest_entries.append((tap.hexdigests()[algorithm], f"data/{rel}"))
                 total_octets += size
                 file_count += 1
 

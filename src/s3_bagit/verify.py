@@ -21,16 +21,15 @@ storage-scripts, since storage-scripts does not implement BagIt
 verification.
 """
 
-import hashlib
 from dataclasses import dataclass, field
 from typing import Any
+
+from s3_archive.hashing import stream_hash_object
 
 from s3_bagit.exceptions import BagError
 from s3_bagit.log_config import get_logger
 
 log = get_logger(__name__)
-
-_CHUNK_SIZE = 65536
 
 # Supported hash algorithms — anything ``hashlib.new()`` accepts works at
 # runtime, but we hard-list the four standard BagIt choices for clearer
@@ -114,15 +113,17 @@ def _list_bag_objects(client, bucket: str, prefix: str) -> dict[str, dict[str, A
 
 
 def _stream_hash(client, bucket: str, key: str, algorithm: str) -> str:
-    """Stream-download s3://bucket/key and return its lowercase hex digest."""
-    hasher = hashlib.new(algorithm)
-    body = client.get_object(Bucket=bucket, Key=key)["Body"]
-    while True:
-        chunk = body.read(_CHUNK_SIZE)
-        if not chunk:
-            break
-        hasher.update(chunk)
-    return hasher.hexdigest()
+    """Stream-download s3://bucket/key and return its lowercase hex digest.
+
+    One-algorithm-at-a-time wrapper around
+    :func:`s3_archive.hashing.stream_hash_object`. Matches the
+    per-manifest call shape used by :func:`_verify_manifest`: each
+    payload manifest re-reads the file with its own algorithm. That's
+    intentionally not optimized — a multi-algorithm bag's verify cost
+    scales linearly with manifest count, but the read code path stays
+    simple. See verify_against for the single-pass multi-hash variant.
+    """
+    return stream_hash_object(client, bucket, key, (algorithm,))[algorithm]
 
 
 def _read_text(client, bucket: str, key: str) -> str:

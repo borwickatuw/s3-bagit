@@ -21,7 +21,7 @@ dependencies = [
 s3-bagit = "s3_bagit.cli:main"
 
 [tool.uv.sources]
-s3-archive = { git = "https://github.com/borwickatuw/s3-archive", tag = "v0.1.0" }
+s3-archive = { path = "../s3-archive", editable = true }
 
 [dependency-groups]
 dev = [

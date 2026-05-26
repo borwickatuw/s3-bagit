@@ -28,11 +28,12 @@ Tagmanifests are out of scope here: the target prefix is intentionally
 files in the first place.
 """
 
-import hashlib
 import tarfile
 import zipfile
 
-from stream_unzip import stream_unzip
+from s3_archive.exceptions import UnsupportedArchiveFormatError
+from s3_archive.hashing import stream_hash_object
+from s3_archive.members import iter_archive_members
 
 from s3_bagit.exceptions import BagError
 from s3_bagit.log_config import get_logger
@@ -44,16 +45,7 @@ from s3_bagit.verify import (
 
 log = get_logger(__name__)
 
-_CHUNK_SIZE = 65536
 _KNOWN_ALGOS = {"md5", "sha1", "sha256", "sha512"}
-
-# Maps ``s3_bagit.s3_url.detect_format`` strings to ``tarfile.open`` modes.
-_TAR_MODES: dict[str, str] = {
-    "tar": "r|",
-    "tar.gz": "r|gz",
-    "tar.bz2": "r|bz2",
-    "tar.xz": "r|xz",
-}
 
 
 def _is_tag_file_name(name: str) -> bool:
@@ -72,59 +64,25 @@ def _is_tag_file_name(name: str) -> bool:
     return base.startswith("tagmanifest-") and base.endswith(".txt")
 
 
-def _read_tag_files_from_tar(client, bucket: str, key: str, tar_mode: str) -> dict[str, bytes]:
-    """Stream a tar archive once; capture tag-file bodies, drain payload bytes."""
-    captured: dict[str, bytes] = {}
-    resp = client.get_object(Bucket=bucket, Key=key)
-    with tarfile.open(fileobj=resp["Body"], mode=tar_mode) as tar:
-        for member in tar:
-            if not member.isfile():
-                continue
-            fobj = tar.extractfile(member)
-            if fobj is None:
-                continue
-            if _is_tag_file_name(member.name):
-                captured[member.name] = fobj.read()
-            else:
-                # Drain the payload body without storing it. A 100 GB payload
-                # member must not buffer 100 GB of bytes.
-                while fobj.read(_CHUNK_SIZE):
-                    pass
-    return captured
-
-
-def _read_tag_files_from_zip(client, bucket: str, key: str) -> dict[str, bytes]:
-    """Same shape as :func:`_read_tag_files_from_tar` for zip archives."""
-    captured: dict[str, bytes] = {}
-    resp = client.get_object(Bucket=bucket, Key=key)
-
-    def _archive_chunks():
-        while True:
-            chunk = resp["Body"].read(_CHUNK_SIZE)
-            if not chunk:
-                break
-            yield chunk
-
-    for name, _size, chunks in stream_unzip(_archive_chunks()):
-        file_name = name.decode("utf-8") if isinstance(name, bytes) else name
-        if file_name.endswith("/"):
-            for _ in chunks:
-                pass
-            continue
-        if _is_tag_file_name(file_name):
-            captured[file_name] = b"".join(chunks)
-        else:
-            for _ in chunks:
-                pass
-    return captured
-
-
 def _read_tag_files(client, bucket: str, key: str, fmt: str) -> dict[str, bytes]:
-    if fmt in _TAR_MODES:
-        return _read_tag_files_from_tar(client, bucket, key, _TAR_MODES[fmt])
-    if fmt == "zip":
-        return _read_tag_files_from_zip(client, bucket, key)
-    raise BagError(f"Unsupported archive format for verify-against: {fmt!r}")
+    """Stream an archive once; capture tag-file bodies, drain payload bytes.
+
+    Single loop over :func:`s3_archive.members.iter_archive_members`
+    handles every supported archive format. A 100 GB payload member is
+    drained without storing it in memory; only the (small) tag-file
+    bodies are buffered.
+    """
+    captured: dict[str, bytes] = {}
+    try:
+        member_iter = iter_archive_members(client, bucket, key, fmt)
+    except UnsupportedArchiveFormatError as exc:
+        raise BagError(f"Unsupported archive format for verify-against: {fmt!r}") from exc
+    for member in member_iter:
+        if _is_tag_file_name(member.name):
+            captured[member.name] = member.read_all()
+        else:
+            member.drain()
+    return captured
 
 
 def _identify_bag_root(captured: dict[str, bytes]) -> str:
@@ -175,24 +133,6 @@ def _list_target_objects(client, bucket: str, prefix: str) -> dict[str, int]:
                 continue
             out[rel] = obj["Size"]
     return out
-
-
-def _stream_hash_multi(
-    client,
-    bucket: str,
-    key: str,
-    algorithms: list[str],
-) -> dict[str, str]:
-    """Stream-download an object once, feed every requested hasher, return ``{algo: hexdigest}``."""
-    hashers = {algo: hashlib.new(algo) for algo in algorithms}
-    body = client.get_object(Bucket=bucket, Key=key)["Body"]
-    while True:
-        chunk = body.read(_CHUNK_SIZE)
-        if not chunk:
-            break
-        for hasher in hashers.values():
-            hasher.update(chunk)
-    return {algo: hasher.hexdigest() for algo, hasher in hashers.items()}
 
 
 def verify_against(
@@ -298,7 +238,7 @@ def verify_against(
             continue
         if verbose:
             log.info("  %s", target_rel)
-        actuals = _stream_hash_multi(
+        actuals = stream_hash_object(
             client, target_bucket, target_prefix + target_rel, algorithms_needed
         )
         for algo, expected in expected_map.items():
