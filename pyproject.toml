@@ -1,11 +1,13 @@
 [project]
 name = "s3-bagit"
-version = "0.1.0"
 description = "BagIt extract and verify against any S3-compatible storage, streaming end-to-end."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "BSD-3-Clause" }
 authors = [{ name = "University of Washington Libraries" }]
+# Version is derived from git tags by hatch-vcs (see [tool.hatch.*] below)
+# so `bump-version` is the single source of truth.
+dynamic = ["version"]
 dependencies = [
     "boto3>=1.35",
     "python-dotenv>=1.0",
@@ -30,8 +32,20 @@ test = [
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+# Used when no git tags are present yet (e.g. fresh clone before the
+# first `bump-version`). Anything > the latest published version so
+# pip's resolver still treats a dev install as "newer than installed".
+fallback-version = "0.0.0+unknown"
+
+[tool.hatch.build.hooks.vcs]
+# hatch-vcs writes the resolved version here on every build so the
+# runtime can read it without re-shelling out to git.
+version-file = "src/s3_bagit/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/s3_bagit"]

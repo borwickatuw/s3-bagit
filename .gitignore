@@ -12,6 +12,9 @@ __pycache__/
 dist/
 build/
 
+# hatch-vcs writes this on every build from git describe — derived, never committed
+src/s3_bagit/_version.py
+
 # Virtual environments
 .venv/
 venv/
