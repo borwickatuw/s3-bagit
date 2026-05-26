@@ -71,6 +71,19 @@ Bandit's `B324` warning about MD5/SHA1 is suppressed for `verify.py`
 because BagIt expressly allows both for backward compatibility with
 older bags.
 
+## Tag-file ordering in `create-bag` archives
+
+Bags emitted by `s3-bagit create-bag` place all `data/` payload
+members first, then `bagit.txt`, `bag-info.txt`,
+`manifest-<algo>.txt`, and `tagmanifest-<algo>.txt`. This is
+deliberate — keeping tag files trailing means `create-bag` can be
+single-pass over each payload object (the manifest is built from
+hashes computed on the way through). RFC 8493 §4 describes a
+serialized bag as a packaged form of the bag directory but places
+no ordering requirement on members within the serialization, so
+tag-files-trailing is spec-conformant. Tools that walk the archive
+in order (`tar tvf`, `s3-bagit ls`) will list payload first.
+
 ## What s3-bagit verifies
 
 Per RFC 8493 §3:

@@ -2,16 +2,19 @@
 
 ## Project Overview
 
-Two-operation CLI for BagIt (RFC 8493) workflows against any
-S3-compatible object storage: `extract` a serialized bag (tar.gz / zip)
-from S3 to an S3 destination prefix, and `verify` an already-extracted
-bag at an S3 prefix. Everything streams — nothing is ever staged on
-local disk.
+Narrow CLI for BagIt (RFC 8493) workflows against any S3-compatible
+object storage:
+
+- `extract` — serialized bag (tar.gz / zip) in S3 → extracted bag at
+  an S3 prefix.
+- `verify` — check an already-extracted bag at an S3 prefix.
+- `create-bag` — S3 prefix → serialized BagIt `.tar.gz` at an S3 key.
+
+Everything streams — nothing is ever staged on local disk.
 
 Built initially for UW Libraries' Preservation team against Kopah
 (Ceph RadosGW), but written to be S3-generic — AWS S3, MinIO,
-DigitalOcean Spaces, etc. all work. Narrow scope: just these two
-operations.
+DigitalOcean Spaces, etc. all work.
 
 ## Related Projects
 
@@ -45,16 +48,17 @@ guides in `claude-meta/best-practices/`. Project-specific:
 
 ```
 src/s3_bagit/
-    cli.py            argparse entry point (extract, verify)
+    cli.py            argparse entry point (extract, verify, create-bag, ls, config, issue)
     extract.py        streaming tar.gz + zip extract to S3
     verify.py         RFC 8493 manifest / tagmanifest / Payload-Oxum checks
+    create_bag.py     streaming S3-prefix → BagIt .tar.gz (single-pass, tag files trailing)
+    ls.py             stream-list an archive's members
     s3_client.py      boto3 client builder (s3cmd config or AWS chain)
     s3_url.py         parse_s3_url, parse_s3_prefix, detect_format
     exceptions.py     ConfigError, BagError
     log_config.py     tqdm-aware console logger
 tests/                pytest + moto (no live S3 required)
 docs/
-    OPERATIONS.md     operator guide
     BAGIT-SPEC.md     conformance notes
     ARCHITECTURE.md   streaming model and S3-to-S3 design
 ```
@@ -76,6 +80,7 @@ Direct invocation:
 ```
 uv run s3-bagit extract s3://bucket/bag.tar.gz s3://bucket/extracted/
 uv run s3-bagit verify s3://bucket/extracted/
+uv run s3-bagit create-bag --bag-name my-bag s3://bucket/src/ s3://bucket/my-bag.tar.gz
 ```
 
 Or once published, `uvx --from s3-bagit s3-bagit ...`.

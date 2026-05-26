@@ -66,6 +66,65 @@ The same shape is used in storage-scripts' `stream_archive` package;
 the wrappers here are isolated copies so s3-bagit has no
 storage-scripts runtime dependency.
 
+## Create-bag
+
+`create-bag` is the inverse of `extract`: it walks an S3 prefix and
+emits a serialized BagIt `.tar.gz` at another S3 key. The same
+"nothing on local disk" constraint applies. The challenge is that
+BagIt manifests contain SHA-256 (or SHA-512) checksums of every
+payload file, so we'd appear to need the bytes twice — once to hash,
+once to write into the tar.
+
+We avoid the second pass with two tricks:
+
+1. **Tee the read**: each S3 GET is consumed by a
+   `_HashingBody` wrapper whose `read()` updates a `hashlib` hasher
+   on the way through. `tarfile.addfile(info, fileobj)` reads exactly
+   `info.size` bytes from `fileobj`, so the single S3 GET produces
+   both the tar member bytes and the manifest checksum.
+2. **Tag files trailing**: RFC 8493 places no ordering requirement
+   on members within a serialized bag, so after all `data/` members
+   are in the tar we append `bagit.txt`, `bag-info.txt`,
+   `manifest-<algo>.txt`, and `tagmanifest-<algo>.txt` (built in
+   memory from the accumulated digests).
+
+The compressed tar output goes through an `os.pipe()` to a worker
+thread that runs `client.upload_fileobj` against the read end:
+
+```
+        ┌──────────────────────────┐
+        │ S3 list_objects_v2 +     │
+        │ get_object per payload   │
+        └────────────┬─────────────┘
+                     │  body chunks
+                     ▼
+        ┌──────────────────────────┐
+        │ _HashingBody (tee)       │──► manifest digest
+        └────────────┬─────────────┘
+                     │  same bytes
+                     ▼
+        ┌──────────────────────────┐
+        │ tarfile w|gz             │
+        │  (data/* then tag files) │
+        └────────────┬─────────────┘
+                     │  os.pipe()
+                     ▼
+        ┌──────────────────────────┐
+        │ worker thread:           │
+        │ upload_fileobj(read_end) │
+        └────────────┬─────────────┘
+                     ▼
+        ┌──────────────────────────┐
+        │ S3                       │
+        │  s3://dest/bag.tar.gz    │
+        └──────────────────────────┘
+```
+
+Broken-pipe semantics make error propagation clean: if the uploader
+dies mid-stream, the writer side sees `BrokenPipeError` on its next
+flush. The `create_bag` function joins the worker thread before
+returning and re-raises whichever exception fired.
+
 ## Verify
 
 Verification is unavoidably **download + hash + compare** for every

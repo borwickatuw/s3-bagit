@@ -6,11 +6,12 @@ Works against AWS S3, UW Libraries' Kopah, MinIO, DigitalOcean Spaces,
 Backblaze B2, Wasabi — anything that speaks S3.
 
 ```
-s3-bagit config                             # interactive credentials setup
-s3-bagit extract <archive_url> <dest_url>   # serialized bag in S3 → extracted bag in S3
-s3-bagit verify  <bag_url>                  # check an already-extracted bag at an S3 prefix
-s3-bagit ls      <archive_url>              # peek inside an archive without extracting
-s3-bagit issue   ["short summary"]          # open a pre-filled GitHub issue
+s3-bagit config                                       # interactive credentials setup
+s3-bagit extract    <archive_url> <dest_url>          # serialized bag in S3 → extracted bag in S3
+s3-bagit create-bag <src_url>     <dest_archive_url>  # S3 prefix → BagIt .tar.gz in S3
+s3-bagit verify     <bag_url>                         # check an already-extracted bag at an S3 prefix
+s3-bagit ls         <archive_url>                     # peek inside an archive without extracting
+s3-bagit issue      ["short summary"]                 # open a pre-filled GitHub issue
 ```
 
 > Bookmark `https://github.com/borwickatuw/s3-bagit#readme` — this
@@ -99,6 +100,38 @@ By default this verifies the extracted bag and exits 0 / `RESULT: VALID`
 on success or 1 / `RESULT: INVALID` on failure. Pass `--no-verify` to
 skip the post-extract check, or `--dry-run` to list members without
 uploading anything.
+
+### Create a bag from an S3 prefix
+
+```
+s3-bagit create-bag --bag-name my-bag \
+    s3://test-bucket/incoming/source-dir/ \
+    s3://test-bucket/bags/my-bag.tar.gz
+```
+
+Streams every object under the source prefix into a serialized BagIt
+`.tar.gz` at the destination key. `--bag-name` is required and becomes
+the top-level directory inside the archive (the bag root). Each
+payload object is read from S3 exactly once: its bytes are hashed for
+the manifest and pushed into the tar simultaneously, and the
+compressed output streams through a pipe straight into a multipart
+upload. The four tag files (`bagit.txt`, `bag-info.txt`,
+`manifest-sha256.txt`, `tagmanifest-sha256.txt`) are appended to the
+tar after the payload — see
+[`docs/BAGIT-SPEC.md`](docs/BAGIT-SPEC.md#tag-file-ordering-in-create-bag-archives)
+for why that's spec-conformant.
+
+Options:
+
+- `--algorithm sha256|sha512` (default `sha256`).
+- `--bag-info "LABEL=VALUE"` (repeatable) adds a label to
+  `bag-info.txt`. A user-supplied label overrides the default for
+  `Bag-Software-Agent`, `Bagging-Date`, or `Payload-Oxum`.
+
+The destination URL must end in `.tar.gz` or `.tgz` — `create-bag`
+only produces gzip-compressed tar archives. An empty source prefix is
+treated as an operator mistake and errors out (exit code 1) rather
+than silently writing a zero-file bag.
 
 ### Verify a bag
 

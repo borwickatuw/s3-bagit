@@ -9,6 +9,9 @@ Subcommands:
 
   * ``verify`` — verify an already-extracted bag at an S3 prefix.
 
+  * ``create-bag`` — stream the objects under an S3 prefix into a
+    serialized BagIt ``.tar.gz`` at a destination S3 key.
+
   * ``ls`` — stream-list an archive's members without extracting.
 
   * ``config`` — interactively write an s3cmd-INI credentials file.
@@ -29,6 +32,7 @@ from dotenv import load_dotenv
 
 from s3_bagit import REPO_URL, __version__
 from s3_bagit.config_cmd import run_config
+from s3_bagit.create_bag import create_bag
 from s3_bagit.exceptions import BagError, ConfigError
 from s3_bagit.extract import extract
 from s3_bagit.issue import open_issue
@@ -101,6 +105,56 @@ def _build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument(
         "bag_url",
         help="Bag root prefix URL, e.g. s3://my-bucket/extracted/bag/",
+    )
+
+    p_create = sub.add_parser(
+        "create-bag",
+        help=(
+            "Stream the objects under an S3 prefix into a BagIt .tar.gz at a destination S3 key."
+        ),
+        description=(
+            "Stream the objects under an S3 prefix into a BagIt .tar.gz at "
+            "a destination S3 key. Single-pass per payload object: each "
+            "object is read once, hashed for the manifest and tar'd into "
+            "the archive simultaneously. Tag files (bagit.txt, bag-info.txt, "
+            "manifest, tagmanifest) are appended to the tar after the "
+            "payload — RFC 8493 places no ordering requirement on "
+            "serialized bags, so tag-files-trailing is conformant."
+        ),
+    )
+    p_create.add_argument(
+        "src_url",
+        help="Source prefix URL whose objects become the bag payload, e.g. s3://my-bucket/source-dir/",
+    )
+    p_create.add_argument(
+        "dest_url",
+        help="Destination archive URL (must end in .tar.gz or .tgz), e.g. s3://my-bucket/bags/bag.tar.gz",
+    )
+    p_create.add_argument(
+        "--bag-name",
+        required=True,
+        help=(
+            "Top-level directory name inside the archive (becomes the bag "
+            "root, e.g. --bag-name my-bag yields my-bag/bagit.txt). Required."
+        ),
+    )
+    p_create.add_argument(
+        "--algorithm",
+        default="sha256",
+        choices=["sha256", "sha512"],
+        help="Hash algorithm for manifest-<algo>.txt / tagmanifest-<algo>.txt (default: sha256).",
+    )
+    p_create.add_argument(
+        "--bag-info",
+        action="append",
+        default=[],
+        metavar="LABEL=VALUE",
+        help=(
+            "Add a label to bag-info.txt; may be repeated. Example: "
+            "--bag-info 'Source-Organization=UW Libraries'. A user-supplied "
+            "label overrides s3-bagit's default for Bag-Software-Agent, "
+            "Bagging-Date, or Payload-Oxum."
+        ),
     )
 
     p_ls = sub.add_parser(
@@ -235,6 +289,53 @@ def _cmd_verify(args: argparse.Namespace, client) -> int:
     return _EXIT_OK if result.ok else _EXIT_VERIFY_FAILED
 
 
+_BAG_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz")
+
+
+def _parse_bag_info_args(items: list[str]) -> list[tuple[str, str]]:
+    """Split ``--bag-info LABEL=VALUE`` strings into ``(label, value)`` pairs.
+
+    Empty labels and missing ``=`` are rejected here so the operator gets
+    a clean ConfigError rather than a confusing bag-info.txt.
+    """
+    out: list[tuple[str, str]] = []
+    for raw in items:
+        if "=" not in raw:
+            raise ConfigError(f"--bag-info expects LABEL=VALUE, got {raw!r} (no '=' found)")
+        label, value = raw.split("=", 1)
+        label = label.strip()
+        if not label:
+            raise ConfigError(f"--bag-info has an empty LABEL: {raw!r}")
+        out.append((label, value))
+    return out
+
+
+def _cmd_create_bag(args: argparse.Namespace, client) -> int:
+    src_bucket, src_prefix = parse_s3_prefix(args.src_url)
+    dest_bucket, dest_key = parse_s3_url(args.dest_url)
+    if not dest_key:
+        raise ConfigError(f"Destination URL needs a key: {args.dest_url!r}")
+    if not dest_key.lower().endswith(_BAG_ARCHIVE_SUFFIXES):
+        raise ConfigError(
+            f"Destination URL must end with .tar.gz or .tgz (got {args.dest_url!r}). "
+            "create-bag only produces gzip-compressed tar archives in v1."
+        )
+
+    bag_info = _parse_bag_info_args(args.bag_info)
+    create_bag(
+        client,
+        src_bucket,
+        src_prefix,
+        dest_bucket,
+        dest_key,
+        bag_name=args.bag_name,
+        algorithm=args.algorithm,
+        bag_info=bag_info,
+        verbose=args.verbose,
+    )
+    return _EXIT_OK
+
+
 def _cmd_ls(args: argparse.Namespace, client) -> int:
     archive_bucket, archive_key = parse_s3_url(args.archive_url)
     if not archive_key:
@@ -275,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_extract(args, client)
         if args.command == "verify":
             return _cmd_verify(args, client)
+        if args.command == "create-bag":
+            return _cmd_create_bag(args, client)
         if args.command == "ls":
             return _cmd_ls(args, client)
     except KeyboardInterrupt:

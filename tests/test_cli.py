@@ -138,6 +138,99 @@ class TestVerifyGuard:
         assert "RESULT: INVALID" in capsys.readouterr().out
 
 
+class TestCreateBagCommand:
+    def _put_source(self, client, files: dict[str, bytes]) -> None:
+        for rel, content in files.items():
+            client.put_object(Bucket="src-bucket", Key=f"src/{rel}", Body=content)
+
+    def test_create_bag_round_trip(self, patched_client, capsys):
+        self._put_source(patched_client, {"a.txt": b"alpha\n"})
+
+        rc = main(
+            [
+                "create-bag",
+                "--bag-name",
+                "my-bag",
+                "s3://src-bucket/src/",
+                "s3://dest-bucket/bags/my-bag.tar.gz",
+            ]
+        )
+        assert rc == 0, capsys.readouterr().err
+
+        # The bag's root inside the archive is `my-bag/`, so re-extract to
+        # the parent prefix and verify at `extracted/my-bag/`.
+        rc = main(
+            [
+                "extract",
+                "--no-verify",
+                "s3://dest-bucket/bags/my-bag.tar.gz",
+                "s3://dest-bucket/extracted/",
+            ]
+        )
+        assert rc == 0
+        rc = main(["verify", "s3://dest-bucket/extracted/my-bag/"])
+        assert rc == 0
+        assert "RESULT: VALID" in capsys.readouterr().out
+
+    def test_create_bag_rejects_non_targz_dest(self, patched_client, capsys):
+        self._put_source(patched_client, {"a.txt": b"alpha\n"})
+
+        rc = main(
+            [
+                "create-bag",
+                "--bag-name",
+                "my-bag",
+                "s3://src-bucket/src/",
+                "s3://dest-bucket/bags/my-bag.zip",
+            ]
+        )
+        assert rc == 2
+        assert "must end with .tar.gz" in capsys.readouterr().err
+
+    def test_create_bag_rejects_dest_without_key(self, patched_client, capsys):
+        rc = main(
+            [
+                "create-bag",
+                "--bag-name",
+                "my-bag",
+                "s3://src-bucket/src/",
+                "s3://dest-bucket/",
+            ]
+        )
+        assert rc == 2
+        assert "needs a key" in capsys.readouterr().err
+
+    def test_create_bag_rejects_bad_bag_info(self, patched_client, capsys):
+        self._put_source(patched_client, {"a.txt": b"alpha\n"})
+        rc = main(
+            [
+                "create-bag",
+                "--bag-name",
+                "my-bag",
+                "--bag-info",
+                "no-equals-sign",
+                "s3://src-bucket/src/",
+                "s3://dest-bucket/bag.tar.gz",
+            ]
+        )
+        assert rc == 2
+        assert "LABEL=VALUE" in capsys.readouterr().err
+
+    def test_create_bag_empty_source_exits_1(self, patched_client, capsys):
+        # Empty prefix → BagError → exit 1 via the BagError handler.
+        rc = main(
+            [
+                "create-bag",
+                "--bag-name",
+                "my-bag",
+                "s3://src-bucket/empty/",
+                "s3://dest-bucket/bag.tar.gz",
+            ]
+        )
+        assert rc == 1
+        assert "empty" in capsys.readouterr().err
+
+
 class TestLsCommand:
     def test_ls_tar_gz_prints_members_and_summary(self, patched_client, capsys):
         files = make_bag_files({"a.txt": b"alpha\n", "b.txt": b"beta\n"})
