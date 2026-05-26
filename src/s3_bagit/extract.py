@@ -1,6 +1,6 @@
 """Streaming bag-archive extract from S3 to S3.
 
-Both ``extract_tar_gz`` and ``extract_zip`` stream the archive object out
+Both ``extract_tar`` and ``extract_zip`` stream the archive object out
 of S3, decompress on the fly, and ``upload_fileobj`` each member back to
 S3 — nothing is staged on local disk. A 500 GB archive does not need
 500 GB of free space anywhere.
@@ -20,6 +20,15 @@ from s3_bagit.log_config import get_logger
 log = get_logger(__name__)
 
 _CHUNK_SIZE = 65536
+
+# Maps the format string from :func:`s3_bagit.s3_url.detect_format` to the
+# ``tarfile.open`` streaming mode that decodes it.
+_TAR_MODES: dict[str, str] = {
+    "tar": "r|",
+    "tar.gz": "r|gz",
+    "tar.bz2": "r|bz2",
+    "tar.xz": "r|xz",
+}
 
 
 class _NonSeekableReader:
@@ -86,24 +95,29 @@ def _dest_key(prefix: str, member_name: str) -> str:
     return prefix + "/" + member_name
 
 
-def extract_tar_gz(
+def extract_tar(
     client,
     archive_bucket: str,
     archive_key: str,
     dest_bucket: str,
     dest_prefix: str,
+    tar_mode: str,
     *,
     dry_run: bool = False,
     verbose: bool = False,
 ) -> list[str]:
-    """Stream a tar.gz from S3 and upload each member back to S3.
+    """Stream a tar (optionally compressed) from S3 and upload each member back to S3.
+
+    *tar_mode* is one of ``"r|"``, ``"r|gz"``, ``"r|bz2"``, ``"r|xz"`` —
+    all of which ``tarfile.open`` handles in a single non-seeking pass.
 
     Returns the list of member names that were (or would be) written,
     relative to *dest_prefix*. The list is used by the CLI's post-extract
     verify step.
     """
     log.info(
-        "Extracting tar.gz s3://%s/%s -> s3://%s/%s",
+        "Extracting tar (mode=%s) s3://%s/%s -> s3://%s/%s",
+        tar_mode,
         archive_bucket,
         archive_key,
         dest_bucket,
@@ -113,7 +127,7 @@ def extract_tar_gz(
     resp = client.get_object(Bucket=archive_bucket, Key=archive_key)
     member_names: list[str] = []
 
-    with tarfile.open(fileobj=resp["Body"], mode="r|gz") as tar:
+    with tarfile.open(fileobj=resp["Body"], mode=tar_mode) as tar:
         for member in tar:
             if not member.isfile():
                 continue
@@ -132,7 +146,7 @@ def extract_tar_gz(
             client.upload_fileobj(_NonSeekableReader(fileobj), dest_bucket, dest_key)
 
     log.info(
-        "tar.gz extract %s: %d files",
+        "tar extract %s: %d files",
         "(dry-run)" if dry_run else "complete",
         len(member_names),
     )
@@ -213,13 +227,14 @@ def extract(
     verbose: bool = False,
 ) -> list[str]:
     """Dispatch on archive format. Returns the list of extracted member names."""
-    if fmt == "tar.gz":
-        return extract_tar_gz(
+    if fmt in _TAR_MODES:
+        return extract_tar(
             client,
             archive_bucket,
             archive_key,
             dest_bucket,
             dest_prefix,
+            _TAR_MODES[fmt],
             dry_run=dry_run,
             verbose=verbose,
         )

@@ -136,3 +136,97 @@ class TestVerifyGuard:
         rc = main(["verify", "s3://dest-bucket/some-bag/"])
         assert rc == 1  # Verify failed, not config error.
         assert "RESULT: INVALID" in capsys.readouterr().out
+
+
+class TestLsCommand:
+    def test_ls_tar_gz_prints_members_and_summary(self, patched_client, capsys):
+        files = make_bag_files({"a.txt": b"alpha\n", "b.txt": b"beta\n"})
+        _put_archive(patched_client, "src-bucket", "in/bag.tar.gz", build_tar_gz(files))
+
+        rc = main(["ls", "s3://src-bucket/in/bag.tar.gz"])
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "data/a.txt" in out
+        assert "data/b.txt" in out
+        # Summary line shape: "<n> files, <size> <unit>"
+        assert " files, " in out
+
+    def test_ls_zip_prints_members(self, patched_client, capsys):
+        files = make_bag_files({"a.txt": b"alpha\n"})
+        _put_archive(patched_client, "src-bucket", "in/bag.zip", build_zip(files))
+
+        rc = main(["ls", "s3://src-bucket/in/bag.zip"])
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "data/a.txt" in out
+        assert " files, " in out
+
+    def test_ls_rejects_bad_url(self, patched_client, capsys):
+        rc = main(["ls", "s3://src-bucket/file.rar"])
+        assert rc == 2
+        assert "Cannot detect archive format" in capsys.readouterr().err
+
+
+class TestIssueCommand:
+    def test_issue_prints_url_and_opens_browser(self, capsys, monkeypatch):
+        opened: list[str] = []
+        monkeypatch.setattr(
+            "s3_bagit.issue.webbrowser.open", lambda url: opened.append(url) or True
+        )
+
+        rc = main(["issue", "something broke"])
+
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert len(opened) == 1
+        assert opened[0].startswith("https://github.com/borwickatuw/s3-bagit/issues/new?")
+        # The brief travels through the URL.
+        assert "something" in opened[0]
+        # And the URL is also printed for copy-paste.
+        assert "github.com/borwickatuw/s3-bagit/issues/new" in captured.out
+
+    def test_issue_falls_back_when_no_browser(self, capsys, monkeypatch):
+        monkeypatch.setattr("s3_bagit.issue.webbrowser.open", lambda url: False)
+
+        rc = main(["issue"])
+
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "No browser available" in captured.out
+
+
+class TestConfigCommandDispatch:
+    """Smoke check that `s3-bagit config` reaches `run_config` without needing S3 creds."""
+
+    def test_config_does_not_call_load_client(self, monkeypatch, capsys):
+        called = {"run_config": False}
+
+        def fake_run_config():
+            called["run_config"] = True
+            return 0
+
+        # `load_client` must NOT be called for `config` — operators run this
+        # *before* they have credentials.
+        monkeypatch.setattr(
+            "s3_bagit.cli.load_client",
+            lambda *a, **kw: pytest.fail("load_client should not be called for `config`"),
+        )
+        # `cli.py` does `from s3_bagit.config_cmd import run_config`, so the
+        # binding to patch lives in the cli module's namespace.
+        monkeypatch.setattr("s3_bagit.cli.run_config", fake_run_config)
+
+        rc = main(["config"])
+
+        assert rc == 0
+        assert called["run_config"] is True
+
+
+class TestErrorHintAppended:
+    def test_config_error_includes_issue_hint(self, patched_client, capsys):
+        rc = main(["extract", "s3://src-bucket/file.rar", "s3://dest-bucket/out/"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Cannot detect archive format" in err
+        assert "s3-bagit issue" in err

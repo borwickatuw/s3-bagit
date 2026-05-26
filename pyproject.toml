@@ -66,6 +66,7 @@ select = [
     "S101",    # assert in tests
     "ARG001",
     "ARG002",
+    "ARG005",  # unused lambda args in fixtures/monkeypatches are unavoidable
     "S105",
     "S106",
     "S107",    # hardcoded "password" defaults — fixture knobs, not real creds
@@ -74,6 +75,15 @@ select = [
 ]
 "src/s3_bagit/cli.py" = [
     "T20",     # CLI prints to user
+]
+"src/s3_bagit/config_cmd.py" = [
+    "T20",     # interactive CLI subcommand prints to user
+]
+"src/s3_bagit/issue.py" = [
+    "T20",     # CLI subcommand prints the URL fallback
+]
+"src/s3_bagit/ls.py" = [
+    "T20",     # CLI subcommand prints archive listing
 ]
 "src/s3_bagit/verify.py" = [
     "S324",    # md5/sha1 are legitimate BagIt manifest algorithms

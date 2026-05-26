@@ -44,6 +44,18 @@ class TestDetectFormat:
     def test_tar_gz(self, url):
         assert detect_format(url) == "tar.gz"
 
+    @pytest.mark.parametrize("url", ["s3://b/x.tar.bz2", "s3://b/x.tbz2", "s3://b/X.TBZ2"])
+    def test_tar_bz2(self, url):
+        assert detect_format(url) == "tar.bz2"
+
+    @pytest.mark.parametrize("url", ["s3://b/x.tar.xz", "s3://b/x.txz", "s3://b/X.TAR.XZ"])
+    def test_tar_xz(self, url):
+        assert detect_format(url) == "tar.xz"
+
+    @pytest.mark.parametrize("url", ["s3://b/x.tar", "s3://b/X.TAR"])
+    def test_tar(self, url):
+        assert detect_format(url) == "tar"
+
     @pytest.mark.parametrize("url", ["s3://b/x.zip", "s3://b/X.ZIP"])
     def test_zip(self, url):
         assert detect_format(url) == "zip"
@@ -55,3 +67,12 @@ class TestDetectFormat:
     def test_rejects_unknown(self):
         with pytest.raises(ConfigError, match="Cannot detect archive format"):
             detect_format("s3://b/x.rar")
+
+    def test_error_lists_all_extensions(self):
+        # The error message should mention .tar, .tar.gz, .tar.bz2, .tar.xz, .zip
+        # so operators can see what's accepted at a glance.
+        with pytest.raises(ConfigError) as exc_info:
+            detect_format("s3://b/x.rar")
+        msg = str(exc_info.value)
+        for token in (".tar", ".tar.gz", ".tar.bz2", ".tar.xz", ".zip"):
+            assert token in msg

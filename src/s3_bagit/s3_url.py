@@ -34,24 +34,37 @@ def parse_s3_prefix(url: str) -> tuple[str, str]:
     return bucket, prefix
 
 
+# Order matters: longer suffixes (e.g. ".tar.gz") must be checked before
+# their bare-extension counterparts (".tar") to avoid misclassifying a
+# compressed tar as an uncompressed one.
+_EXTENSION_FORMATS: tuple[tuple[tuple[str, ...], str], ...] = (
+    ((".tar.gz", ".tgz"), "tar.gz"),
+    ((".tar.bz2", ".tbz2"), "tar.bz2"),
+    ((".tar.xz", ".txz"), "tar.xz"),
+    ((".tar",), "tar"),
+    ((".zip",), "zip"),
+)
+
+
 def detect_format(url: str) -> str:
     """Detect archive format from URL extension.
 
-    Returns ``"tar.gz"`` or ``"zip"``. Raises :class:`ConfigError` for
-    unrecognized extensions. ``.7z`` is rejected with a specific message
-    because Preservation teams sometimes use it and the spec doesn't
-    require it; see docs/BAGIT-SPEC.md.
+    Returns one of ``"tar"``, ``"tar.gz"``, ``"tar.bz2"``, ``"tar.xz"``,
+    or ``"zip"``. Raises :class:`ConfigError` for unrecognized extensions.
+    ``.7z`` is rejected with a specific message because Preservation teams
+    sometimes use it and the spec doesn't require it; see
+    docs/BAGIT-SPEC.md.
     """
     lower = url.lower()
-    if lower.endswith((".tar.gz", ".tgz")):
-        return "tar.gz"
-    if lower.endswith(".zip"):
-        return "zip"
+    for suffixes, fmt in _EXTENSION_FORMATS:
+        if lower.endswith(suffixes):
+            return fmt
     if lower.endswith(".7z"):
         raise ConfigError(
             f"7z is not supported (see docs/BAGIT-SPEC.md). RFC 8493 §4.1.2 names "
             f"TAR, ZIP, and TGZ; 7z requires non-streaming seek access. URL: {url!r}"
         )
     raise ConfigError(
-        f"Cannot detect archive format from: {url!r} (expected .tar.gz, .tgz, or .zip)"
+        f"Cannot detect archive format from: {url!r} "
+        f"(expected .tar, .tar.gz/.tgz, .tar.bz2/.tbz2, .tar.xz/.txz, or .zip)"
     )

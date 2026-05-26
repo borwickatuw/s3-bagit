@@ -1,17 +1,23 @@
 """``s3-bagit`` command-line entry point.
 
-Two subcommands:
+Subcommands:
 
-  * ``extract`` — stream a BagIt archive (tar.gz or zip) out of S3 and
-    upload each member to a destination S3 prefix. By default also runs
-    ``verify`` against the destination prefix; pass ``--no-verify`` to
-    skip.
+  * ``extract`` — stream a BagIt archive (tar / tar.gz / tar.bz2 /
+    tar.xz / zip) out of S3 and upload each member to a destination S3
+    prefix. By default also runs ``verify`` against the destination
+    prefix; pass ``--no-verify`` to skip.
 
   * ``verify`` — verify an already-extracted bag at an S3 prefix.
 
-The CLI's job is to parse args, build the S3 client, dispatch, and
-translate exceptions into clean stderr messages + exit codes. All real
-work lives in :mod:`s3_bagit.extract` and :mod:`s3_bagit.verify`.
+  * ``ls`` — stream-list an archive's members without extracting.
+
+  * ``config`` — interactively write an s3cmd-INI credentials file.
+
+  * ``issue`` — open a pre-filled GitHub new-issue page in a browser.
+
+The CLI's job is to parse args, build the S3 client (where needed),
+dispatch, and translate exceptions into clean stderr messages + exit
+codes. All real work lives in the matching modules.
 """
 
 import argparse
@@ -22,10 +28,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from s3_bagit import __version__
+from s3_bagit.config_cmd import run_config
 from s3_bagit.exceptions import BagError, ConfigError
 from s3_bagit.extract import extract
-from s3_bagit.s3_client import load_client
+from s3_bagit.issue import open_issue
 from s3_bagit.log_config import get_logger, setup_console
+from s3_bagit.ls import list_archive
+from s3_bagit.s3_client import load_client
 from s3_bagit.s3_url import detect_format, parse_s3_prefix, parse_s3_url
 from s3_bagit.verify import BagVerifyResult, verify_bag
 
@@ -35,6 +44,8 @@ log = get_logger(__name__)
 _EXIT_OK = 0
 _EXIT_VERIFY_FAILED = 1
 _EXIT_CONFIG_ERROR = 2
+
+_ISSUE_HINT = "For help, run: s3-bagit issue"
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -52,7 +63,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_extract = sub.add_parser(
         "extract",
-        help="Extract a BagIt archive (tar.gz/zip) in S3 to an S3 destination prefix.",
+        help=(
+            "Extract a BagIt archive (tar/tar.gz/tar.bz2/tar.xz/zip) in S3 to a destination prefix."
+        ),
     )
     p_extract.add_argument(
         "archive_url",
@@ -80,6 +93,31 @@ def _build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument(
         "bag_url",
         help="Bag root prefix URL, e.g. s3://my-bucket/extracted/bag/",
+    )
+
+    p_ls = sub.add_parser(
+        "ls",
+        help="List the contents of an archive in S3 without extracting it.",
+    )
+    p_ls.add_argument(
+        "archive_url",
+        help="Source archive URL, e.g. s3://my-bucket/incoming/bag.tar.gz",
+    )
+
+    sub.add_parser(
+        "config",
+        help="Interactively write an s3cmd-INI credentials file (~/.s3cfg by default).",
+    )
+
+    p_issue = sub.add_parser(
+        "issue",
+        help="Open a pre-filled GitHub new-issue page in your browser.",
+    )
+    p_issue.add_argument(
+        "brief",
+        nargs="?",
+        default=None,
+        help='Optional one-line summary, e.g. "extract hangs on big .tar.xz".',
     )
 
     return parser
@@ -138,7 +176,17 @@ def _cmd_extract(args: argparse.Namespace, client) -> int:
     return _EXIT_OK if result.ok else _EXIT_VERIFY_FAILED
 
 
-_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".zip", ".7z")
+_ARCHIVE_SUFFIXES = (
+    ".tar",
+    ".tar.gz",
+    ".tgz",
+    ".tar.bz2",
+    ".tbz2",
+    ".tar.xz",
+    ".txz",
+    ".zip",
+    ".7z",
+)
 
 
 def _guard_against_archive_url(bag_url: str) -> None:
@@ -171,6 +219,23 @@ def _cmd_verify(args: argparse.Namespace, client) -> int:
     return _EXIT_OK if result.ok else _EXIT_VERIFY_FAILED
 
 
+def _cmd_ls(args: argparse.Namespace, client) -> int:
+    archive_bucket, archive_key = parse_s3_url(args.archive_url)
+    if not archive_key:
+        raise ConfigError(f"Archive URL needs a key: {args.archive_url!r}")
+    fmt = detect_format(args.archive_url)
+    list_archive(client, archive_bucket, archive_key, fmt)
+    return _EXIT_OK
+
+
+def _cmd_config(_args: argparse.Namespace) -> int:
+    return run_config()
+
+
+def _cmd_issue(args: argparse.Namespace) -> int:
+    return open_issue(args.brief)
+
+
 def main(argv: list[str] | None = None) -> int:
     # Load .env from CWD if present — operators frequently invoke from
     # the repo directory; CI / Docker should rely on the real environment.
@@ -182,17 +247,27 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     setup_console(logging.DEBUG if args.verbose else logging.INFO)
 
+    # `config` and `issue` don't need (and shouldn't require) S3 creds.
+    if args.command == "config":
+        return _cmd_config(args)
+    if args.command == "issue":
+        return _cmd_issue(args)
+
     try:
         client = load_client()
         if args.command == "extract":
             return _cmd_extract(args, client)
         if args.command == "verify":
             return _cmd_verify(args, client)
+        if args.command == "ls":
+            return _cmd_ls(args, client)
     except ConfigError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
+        print(_ISSUE_HINT, file=sys.stderr)
         return _EXIT_CONFIG_ERROR
     except BagError as exc:
         print(f"Bag error: {exc}", file=sys.stderr)
+        print(_ISSUE_HINT, file=sys.stderr)
         return _EXIT_VERIFY_FAILED
 
     # Unreachable; argparse already enforced a subcommand.

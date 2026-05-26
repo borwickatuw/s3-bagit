@@ -89,20 +89,33 @@ def make_bag_files(
     return files
 
 
-def build_tar_gz(files: dict[str, bytes], *, wrap_prefix: str = "") -> bytes:
-    """Serialize *files* as a tar.gz archive in memory.
+def build_tar(
+    files: dict[str, bytes],
+    *,
+    mode: str = "w:gz",
+    wrap_prefix: str = "",
+) -> bytes:
+    """Serialize *files* as a tar archive in memory.
 
-    If *wrap_prefix* is non-empty, every member name is prefixed with
-    ``<wrap_prefix>/`` — used to test bags wrapped in a top-level dir.
+    *mode* is passed directly to :func:`tarfile.open` and selects the
+    compression — ``"w"`` for plain tar, ``"w:gz"`` / ``"w:bz2"`` / ``"w:xz"``
+    for the compressed variants. If *wrap_prefix* is non-empty, every
+    member name is prefixed with ``<wrap_prefix>/`` — used to test bags
+    wrapped in a top-level dir.
     """
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+    with tarfile.open(fileobj=buf, mode=mode) as tar:
         for name, content in files.items():
             member_name = f"{wrap_prefix}/{name}" if wrap_prefix else name
             info = tarfile.TarInfo(name=member_name)
             info.size = len(content)
             tar.addfile(info, io.BytesIO(content))
     return buf.getvalue()
+
+
+def build_tar_gz(files: dict[str, bytes], *, wrap_prefix: str = "") -> bytes:
+    """Shortcut for :func:`build_tar` with ``mode="w:gz"`` (legacy callers)."""
+    return build_tar(files, mode="w:gz", wrap_prefix=wrap_prefix)
 
 
 def build_zip(files: dict[str, bytes], *, wrap_prefix: str = "") -> bytes:

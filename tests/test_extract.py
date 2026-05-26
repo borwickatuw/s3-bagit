@@ -4,7 +4,7 @@ import pytest
 
 from s3_bagit.extract import extract
 
-from .conftest import build_tar_gz, build_zip, make_bag_files
+from .conftest import build_tar, build_tar_gz, build_zip, make_bag_files
 
 
 @pytest.fixture
@@ -62,6 +62,42 @@ class TestExtractTarGz:
         extract(s3_client, "src-bucket", "bag.tar.gz", "dest-bucket", "", "tar.gz")
         keys = _extracted_keys(s3_client, "dest-bucket", "")
         assert "data/a.txt" in keys
+
+
+class TestExtractTar:
+    """Plain (uncompressed) tar — `tarfile.open` mode "r|"."""
+
+    def test_round_trip(self, s3_client, sample_bag_bytes):
+        archive = build_tar(sample_bag_bytes, mode="w")
+        s3_client.put_object(Bucket="src-bucket", Key="in/bag.tar", Body=archive)
+
+        members = extract(s3_client, "src-bucket", "in/bag.tar", "dest-bucket", "out/", "tar")
+
+        assert set(members) == set(sample_bag_bytes)
+        keys = _extracted_keys(s3_client, "dest-bucket", "out/")
+        assert "out/data/a.txt" in keys
+        assert _body(s3_client, "dest-bucket", "out/data/a.txt") == b"hello\n"
+
+
+class TestExtractTarBz2:
+    """bzip2-compressed tar — exercises the dispatch into mode "r|bz2".
+
+    xz uses the same code path with a different `tarfile` mode string, so
+    one compressed variant covers the dispatch logic.
+    """
+
+    def test_round_trip(self, s3_client, sample_bag_bytes):
+        archive = build_tar(sample_bag_bytes, mode="w:bz2")
+        s3_client.put_object(Bucket="src-bucket", Key="in/bag.tar.bz2", Body=archive)
+
+        members = extract(
+            s3_client, "src-bucket", "in/bag.tar.bz2", "dest-bucket", "out/", "tar.bz2"
+        )
+
+        assert set(members) == set(sample_bag_bytes)
+        keys = _extracted_keys(s3_client, "dest-bucket", "out/")
+        assert "out/data/a.txt" in keys
+        assert _body(s3_client, "dest-bucket", "out/data/a.txt") == b"hello\n"
 
 
 class TestExtractZip:
