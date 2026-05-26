@@ -6,9 +6,10 @@ import tarfile
 
 import pytest
 
-from s3_bagit.create_bag import create_bag, _encode_manifest_path
+from s3_archive.extract import extract
+
+from s3_bagit.create_bag import _encode_manifest_path, create_bag
 from s3_bagit.exceptions import BagError
-from s3_bagit.extract import extract
 from s3_bagit.verify import verify_bag
 
 

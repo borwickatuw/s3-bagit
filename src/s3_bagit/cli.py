@@ -35,16 +35,19 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from s3_archive.exceptions import ConfigError as _S3ArchiveConfigError
+from s3_archive.exceptions import UnsupportedArchiveFormatError
+from s3_archive.extract import extract
+from s3_archive.ls import list_archive
+from s3_archive.url import detect_format, parse_s3_prefix, parse_s3_url
+
 from s3_bagit import REPO_URL, __version__
 from s3_bagit.config_cmd import run_config
 from s3_bagit.create_bag import create_bag
 from s3_bagit.exceptions import BagError, ConfigError
-from s3_bagit.extract import extract
 from s3_bagit.issue import open_issue
 from s3_bagit.log_config import get_logger, setup_console
-from s3_bagit.ls import list_archive
 from s3_bagit.s3_client import load_client
-from s3_bagit.s3_url import detect_format, parse_s3_prefix, parse_s3_url
 from s3_bagit.verify import BagVerifyResult, verify_bag
 from s3_bagit.verify_against import verify_against
 
@@ -440,7 +443,14 @@ def main(argv: list[str] | None = None) -> int:
         # Operator hit Ctrl-C — exit cleanly instead of dumping a traceback.
         print("\nCancelled.", file=sys.stderr)
         return _EXIT_INTERRUPTED
-    except ConfigError as exc:
+    except (ConfigError, _S3ArchiveConfigError) as exc:
+        print(f"Configuration error: {exc}", file=sys.stderr)
+        print(_ISSUE_HINT, file=sys.stderr)
+        return _EXIT_CONFIG_ERROR
+    except UnsupportedArchiveFormatError as exc:
+        # s3-archive raises this instead of ConfigError for unknown
+        # archive extensions; map to the same operator-facing exit code
+        # and hint so existing CLI behavior is preserved verbatim.
         print(f"Configuration error: {exc}", file=sys.stderr)
         print(_ISSUE_HINT, file=sys.stderr)
         return _EXIT_CONFIG_ERROR
