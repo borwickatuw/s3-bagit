@@ -6,10 +6,10 @@ Works against AWS S3, UW Libraries' Kopah, MinIO, DigitalOcean Spaces,
 Backblaze B2, Wasabi — anything that speaks S3.
 
 ```
+s3-bagit config                             # interactive credentials setup
 s3-bagit extract <archive_url> <dest_url>   # serialized bag in S3 → extracted bag in S3
 s3-bagit verify  <bag_url>                  # check an already-extracted bag at an S3 prefix
 s3-bagit ls      <archive_url>              # peek inside an archive without extracting
-s3-bagit config                             # interactive credentials setup
 s3-bagit issue   ["short summary"]          # open a pre-filled GitHub issue
 ```
 
@@ -35,31 +35,24 @@ gymnastics.
   curl -LsSf https://astral.sh/uv/install.sh | sh
   ```
 
-### 2. Install s3-bagit
-
-```
-uv tool install git+https://github.com/borwickatuw/s3-bagit
-```
-
-This drops the `s3-bagit` executable into uv's tool-binary directory —
-`~/.local/bin` on macOS/Linux, `%USERPROFILE%\.local\bin` on Windows —
-so you can run it as `s3-bagit` from any terminal.
-
-If your shell can't find `s3-bagit` after install, that directory
-isn't on your `PATH` yet. Fix it once with:
+### 2. Make uv's tool directory available to your shell
 
 ```
 uv tool update-shell
 ```
 
-then **open a new terminal window** so the updated `PATH` takes
-effect. The same step is needed on PowerShell, which inherits its
-`PATH` from the user environment at launch — re-running `uv tool
-update-shell` and starting a fresh PowerShell session does the trick.
-(`uv tool dir --bin` prints the exact directory if you'd rather add it
-to `PATH` by hand.)
+This adds uv's tool-binary directory (`~/.local/bin` on macOS/Linux,
+`%USERPROFILE%\.local\bin` on Windows) to your `PATH`. **Close the
+current terminal and open a fresh one** so the change takes effect —
+shells, including PowerShell, only read `PATH` at launch.
 
-### 3. Configure credentials
+### 3. Install s3-bagit
+
+```
+uv tool install git+https://github.com/borwickatuw/s3-bagit
+```
+
+### 4. Configure credentials
 
 ```
 s3-bagit config
@@ -69,20 +62,37 @@ The interactive prompt asks for endpoint URL, access key, and secret
 key, then writes them to `~/.s3cfg` (s3cmd-compatible). Press Enter on
 the endpoint prompt if you're targeting AWS S3.
 
-### 4. Verify the install
+### 5. Verify the install
 
 ```
 s3-bagit --version
 ```
 
+You should see a version string like `s3-bagit 0.2.0`. If you see
+`command not found` instead, step 2 didn't take effect — close every
+terminal window and open a fresh one.
+
 ## Common tasks
+
+The examples below all use the same fictional paths
+(`s3://test-bucket/path/to/bag.tgz` for the serialized bag,
+`s3://test-bucket/path/to/extracted/bag` for the extracted version) so
+you can read them as a single end-to-end story.
+
+### Configure credentials
+
+```
+s3-bagit config
+```
+
+Run this once on each workstation, then any time the endpoint or keys
+change. If `~/.s3cfg` already exists, the prompt offers to keep it
+unchanged instead of redoing everything.
 
 ### Extract a bag
 
 ```
-s3-bagit extract \
-    s3://incoming/bag-2026-05-01.tar.gz \
-    s3://preserved/bag-2026-05-01/
+s3-bagit extract s3://test-bucket/path/to/bag.tgz s3://test-bucket/path/to/extracted/bag
 ```
 
 By default this verifies the extracted bag and exits 0 / `RESULT: VALID`
@@ -93,7 +103,7 @@ uploading anything.
 ### Verify a bag
 
 ```
-s3-bagit verify s3://preserved/bag-2026-05-01/
+s3-bagit verify s3://test-bucket/path/to/extracted/bag
 ```
 
 Reports every problem in one pass — checksum mismatches, missing files,
@@ -102,7 +112,7 @@ manifest/oxum disagreements — instead of stopping at the first one.
 ### Look inside an archive without extracting
 
 ```
-s3-bagit ls s3://incoming/bag-2026-05-01.tar.gz
+s3-bagit ls s3://test-bucket/path/to/bag.tgz
 ```
 
 Prints one line per file member plus a summary. Useful as a sanity
@@ -154,10 +164,10 @@ an issue. Still stuck? `s3-bagit issue`.
 **`RESULT: INVALID` on a bag that looks correct** — most often this is
 a wrapping top-level directory inside the archive (members named
 `BagName/data/...` instead of `data/...`). s3-bagit preserves member
-names as-is; extract to `s3://preserved/BagName/` and verify there.
-The other common cause is a `data/.DS_Store` or `__MACOSX/` stowaway
-the manifest doesn't list — remove it from the source archive. Still
-stuck? `s3-bagit issue`.
+names as-is; extract to `s3://test-bucket/path/to/extracted/BagName/`
+and verify there. The other common cause is a `data/.DS_Store` or
+`__MACOSX/` stowaway the manifest doesn't list — remove it from the
+source archive. Still stuck? `s3-bagit issue`.
 
 **Bytes look fine but the run hangs** — usually an endpoint mismatch
 (pointing s3-bagit at AWS when the bag is on Kopah, or vice-versa).
@@ -166,19 +176,18 @@ Check `~/.s3cfg`'s `host_base` against the URL you're using.
 
 ## Reference
 
-### Subcommands and flags
+### Getting help on any command
 
-| Command                                          | What it does                                                                       |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------- |
-| `s3-bagit extract <archive_url> <dest_url>`      | Stream-extract a serialized bag from S3 to an S3 prefix. Auto-verifies by default. |
-| `s3-bagit extract … --no-verify`                 | Skip the post-extract bag verification.                                            |
-| `s3-bagit extract … --dry-run`                   | List members that would be written without uploading anything.                     |
-| `s3-bagit verify <bag_url>`                      | Verify an already-extracted bag at an S3 prefix.                                   |
-| `s3-bagit ls <archive_url>`                      | Stream-list members of an archive without extracting.                              |
-| `s3-bagit config`                                | Interactive credentials setup.                                                     |
-| `s3-bagit issue ["brief"]`                       | Open a pre-filled GitHub issue page.                                               |
-| `-v`, `--verbose`                                | Show per-file progress.                                                            |
-| `--version`                                      | Print the s3-bagit version.                                                        |
+The CLI itself is the authoritative reference. Every subcommand and
+flag is documented there:
+
+```
+s3-bagit --help              # top-level: list subcommands + global flags
+s3-bagit <subcommand> --help # per-subcommand: positional args + flags
+```
+
+For example, `s3-bagit extract --help` shows the exact form of
+`--no-verify`, `--dry-run`, and the expected URLs.
 
 ### Credential resolution order
 
@@ -216,6 +225,7 @@ all of them.
 | 0    | Success.                                                                      |
 | 1    | Bag failed verification (or `extract --no-verify` succeeded but `verify` later failed). |
 | 2    | Configuration error (missing creds, bad S3 URL, unsupported format).          |
+| 130  | Cancelled by Ctrl-C.                                                          |
 
 ### Running from a clone (contributors)
 

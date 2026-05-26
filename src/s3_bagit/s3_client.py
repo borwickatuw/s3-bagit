@@ -61,33 +61,57 @@ def _boto_config(max_pool_connections: int) -> BotoConfig:
     )
 
 
+def build_client(
+    *,
+    access_key: str | None = None,
+    secret_key: str | None = None,
+    endpoint_url: str | None = None,
+    max_pool_connections: int = _DEFAULT_POOL,
+):
+    """Construct a boto3 S3 client directly from explicit values.
+
+    Used by :func:`load_client` (after it resolves credentials from
+    ``$S3CMD_CONFIG``/``~/.s3cfg``/default chain) and by ``s3-bagit
+    config``'s pre-write connection check (which needs to test
+    credentials *before* they're persisted to disk). Pass
+    ``access_key=None`` to let boto3 find creds via its default chain.
+    """
+    boto_cfg = _boto_config(max_pool_connections)
+    if access_key:
+        return boto3.client(
+            "s3",
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            endpoint_url=endpoint_url,
+            config=boto_cfg,
+        )
+    session = boto3.Session()
+    return session.client("s3", endpoint_url=endpoint_url, config=boto_cfg)
+
+
 def load_client(max_pool_connections: int = _DEFAULT_POOL):
     """Return a configured boto3 S3 client.
 
     See module docstring for the resolution order.
     """
-    boto_cfg = _boto_config(max_pool_connections)
-
     explicit_cfg = os.environ.get("S3CMD_CONFIG", "").strip()
     if explicit_cfg:
         access, secret, endpoint = _from_s3cmd_config(explicit_cfg)
-        return boto3.client(
-            "s3",
-            aws_access_key_id=access,
-            aws_secret_access_key=secret,
+        return build_client(
+            access_key=access,
+            secret_key=secret,
             endpoint_url=endpoint,
-            config=boto_cfg,
+            max_pool_connections=max_pool_connections,
         )
 
     default_cfg = _default_s3cfg_path()
     if default_cfg.exists():
         access, secret, endpoint = _from_s3cmd_config(str(default_cfg))
-        return boto3.client(
-            "s3",
-            aws_access_key_id=access,
-            aws_secret_access_key=secret,
+        return build_client(
+            access_key=access,
+            secret_key=secret,
             endpoint_url=endpoint,
-            config=boto_cfg,
+            max_pool_connections=max_pool_connections,
         )
 
     # Fall through to boto3's default credential chain. Fail fast if
@@ -107,4 +131,4 @@ def load_client(max_pool_connections: int = _DEFAULT_POOL):
             "See .env.example for details."
         )
     endpoint_url = os.environ.get("S3_ENDPOINT_URL", "").strip() or None
-    return session.client("s3", endpoint_url=endpoint_url, config=boto_cfg)
+    return build_client(endpoint_url=endpoint_url, max_pool_connections=max_pool_connections)

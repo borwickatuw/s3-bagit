@@ -27,7 +27,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from s3_bagit import __version__
+from s3_bagit import REPO_URL, __version__
 from s3_bagit.config_cmd import run_config
 from s3_bagit.exceptions import BagError, ConfigError
 from s3_bagit.extract import extract
@@ -56,6 +56,12 @@ def _build_parser() -> argparse.ArgumentParser:
         description=(
             "BagIt extract and verify operations against any S3-compatible storage. "
             "All operations stream end-to-end — nothing is staged on local disk."
+        ),
+        epilog=(
+            "S3 credentials: run `s3-bagit config` for an interactive setup, "
+            "or set $S3CMD_CONFIG (path to an s3cmd INI) or $S3_ENDPOINT_URL "
+            "(used with the standard $AWS_ACCESS_KEY_ID / $AWS_SECRET_ACCESS_KEY). "
+            f"Full resolution order: {REPO_URL}#credential-resolution-order"
         ),
     )
     parser.add_argument("--version", action="version", version=f"s3-bagit {__version__}")

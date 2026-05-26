@@ -21,6 +21,9 @@ def cfg_path(tmp_path, monkeypatch):
     # collide with the default-path early-detect check; tests that
     # exercise the early-detect prompt explicitly create `tmp_path / ".s3cfg"`.
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Clear $S3CMD_CONFIG so a developer's environment doesn't bleed in —
+    # the early-detect prefers it over ~/.s3cfg.
+    monkeypatch.delenv("S3CMD_CONFIG", raising=False)
     return tmp_path / "custom-s3cfg"
 
 
@@ -59,8 +62,16 @@ def _drive_prompts(
 
 
 def _disable_smoke(monkeypatch) -> None:
-    """The smoke test reaches into boto3; bypass it for unit tests."""
-    monkeypatch.setattr(config_cmd, "_smoke_test", lambda _path: None)
+    """The pre-write connection check reaches into boto3; bypass it for unit tests.
+
+    Returning ``None`` from ``_try_connect`` means "connection OK", so
+    the prompt loop exits on the first try without asking "retry?".
+    """
+    monkeypatch.setattr(
+        config_cmd,
+        "_try_connect",
+        lambda *_a, **_kw: None,
+    )
 
 
 class TestRunConfigHappyPath:
@@ -236,6 +247,341 @@ class TestEarlyDetectExistingConfig:
         parser.read(default)
         assert parser["default"]["access_key"] == "NEWACCESS"
         assert parser["default"]["host_base"] == "s3.new-endpoint.example"
+
+
+class TestEarlyDetectRespectsS3CMDConfig:
+    """The early-detect path mirrors s3_client.load_client's precedence."""
+
+    def test_existing_s3cmd_config_takes_precedence_over_default(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Both files exist; $S3CMD_CONFIG should win.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        default = tmp_path / ".s3cfg"
+        default.write_text(
+            "[default]\naccess_key = OLD\nsecret_key = OLD\nhost_base = default.example\n"
+        )
+        explicit = tmp_path / "explicit.cfg"
+        explicit.write_text(
+            "[default]\naccess_key = EX\nsecret_key = EX\nhost_base = explicit.example\n"
+        )
+        monkeypatch.setenv("S3CMD_CONFIG", str(explicit))
+
+        _drive_prompts(monkeypatch, confirms=[False])  # decline early-detect
+        _disable_smoke(monkeypatch)
+
+        rc = config_cmd.run_config()
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        # The explicit path (and its host) is what's surfaced, not the default.
+        assert str(explicit) in out
+        assert "explicit.example" in out
+        assert "default.example" not in out
+
+    def test_missing_s3cmd_config_skips_early_detect(self, tmp_path, monkeypatch, capsys):
+        # $S3CMD_CONFIG set but file doesn't exist: operator wants to write
+        # a new config there. No early-detect; prompts proceed.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        target = tmp_path / "tmp-bobo"
+        monkeypatch.setenv("S3CMD_CONFIG", str(target))
+        assert not target.exists()
+
+        # Even if ~/.s3cfg exists, the env-var path wins precedence and
+        # the env-var path doesn't exist — so no early-detect prompt.
+        (tmp_path / ".s3cfg").write_text(
+            "[default]\naccess_key = X\nsecret_key = X\nhost_base = nope\n"
+        )
+
+        _drive_prompts(
+            monkeypatch,
+            text=[
+                "https://s3.kopah.uw.edu",
+                "ACCESS",
+                str(target),  # accept the prefilled path
+            ],
+            passwords=["SECRET"],
+        )
+        _disable_smoke(monkeypatch)
+
+        rc = config_cmd.run_config()
+
+        assert rc == 0
+        assert target.exists()
+        out = capsys.readouterr().out
+        # No "already exists" prompt fired — the env-var path was missing.
+        assert "already exists" not in out
+
+    def test_env_var_path_is_prompt_default(self, tmp_path, monkeypatch):
+        """The 'Config file path' prompt prefills $S3CMD_CONFIG when set."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        target = tmp_path / "tmp-bobo"
+        monkeypatch.setenv("S3CMD_CONFIG", str(target))
+
+        seen_defaults: list[str] = []
+        text_iter = iter(["https://s3.example", "ACCESS", str(target)])
+        password_iter = iter(["SECRET"])
+
+        def fake_text(question, default=""):
+            seen_defaults.append(default)
+            return next(text_iter)
+
+        def fake_password(question):
+            return next(password_iter)
+
+        def fake_confirm(question, *, default=False):
+            return True  # unused (no overwrite case)
+
+        monkeypatch.setattr(config_cmd, "_ask_text", fake_text)
+        monkeypatch.setattr(config_cmd, "_ask_password", fake_password)
+        monkeypatch.setattr(config_cmd, "_ask_confirm", fake_confirm)
+        _disable_smoke(monkeypatch)
+
+        rc = config_cmd.run_config()
+
+        assert rc == 0
+        # The third _ask_text call is for the config path. Its default
+        # must be the $S3CMD_CONFIG value, not ~/.s3cfg.
+        assert seen_defaults[2] == str(target)
+
+
+class TestValidateEndpoint:
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "",  # blank = AWS defaults
+            "https://s3.kopah.uw.edu",
+            "http://localhost:9000",
+            "s3.kopah.uw.edu",
+            "localhost:9000",
+        ],
+    )
+    def test_accepts_valid(self, endpoint):
+        assert config_cmd._validate_endpoint(endpoint) is None
+
+    @pytest.mark.parametrize(
+        "endpoint,token",
+        [
+            ("blark dar dar", "spaces"),
+            ("https:// s3.kopah.uw.edu", "spaces"),
+            ("https://", "scheme but no host"),
+            ("http://", "scheme but no host"),
+        ],
+    )
+    def test_rejects_invalid(self, endpoint, token):
+        msg = config_cmd._validate_endpoint(endpoint)
+        assert msg is not None
+        assert token in msg
+
+
+class TestRunConfigEndpointRetries:
+    def test_invalid_endpoint_reprompts_until_valid(self, monkeypatch, cfg_path, capsys):
+        _drive_prompts(
+            monkeypatch,
+            text=[
+                "blark dar dar",  # rejected
+                "https://",  # rejected
+                "https://s3.kopah.uw.edu",  # accepted
+                "ACCESS",
+                str(cfg_path),
+            ],
+            passwords=["SECRET"],
+        )
+        _disable_smoke(monkeypatch)
+
+        rc = config_cmd.run_config()
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Endpoint must not contain spaces" in out
+        assert "scheme but no host" in out
+        parser = configparser.ConfigParser()
+        parser.read(cfg_path)
+        assert parser["default"]["host_base"] == "s3.kopah.uw.edu"
+
+
+class TestTryConnectSwallowsExceptions:
+    """``_try_connect`` must never raise; it returns an error string instead."""
+
+    def test_value_error_from_boto3_returned_as_string(self, monkeypatch):
+        # A `host_base` with a space crashes boto3 with ValueError. The
+        # helper must catch and surface it as a one-line string so the
+        # interactive loop can show it and prompt for retry.
+        for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_PROFILE"):
+            monkeypatch.delenv(k, raising=False)
+
+        result = config_cmd._try_connect(
+            access_key="X",
+            secret_key="X",
+            host_base="blark dar dar",
+        )
+
+        assert result is not None
+        assert "ValueError" in result or "Invalid endpoint" in result
+
+
+class TestPreWriteConnectionTest:
+    """The new flow: connection test happens BEFORE writing the file."""
+
+    def test_failed_then_successful_retry_writes_second_values(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("S3CMD_CONFIG", raising=False)
+        target = tmp_path / "second-attempt.cfg"
+
+        # First call fails; second succeeds. Each call consumes one item.
+        connect_results = iter(["EndpointConnectionError: nope", None])
+        monkeypatch.setattr(
+            config_cmd,
+            "_try_connect",
+            lambda *_a, **_kw: next(connect_results),
+        )
+
+        _drive_prompts(
+            monkeypatch,
+            text=[
+                "https://broken.example",  # attempt 1 — fails
+                "ACCESS1",
+                "https://good.example",  # attempt 2 — succeeds
+                "ACCESS2",
+                str(target),  # path
+            ],
+            passwords=["SECRET1", "SECRET2"],
+            confirms=[True],  # "Try again with different credentials?" → yes
+        )
+
+        rc = config_cmd.run_config()
+
+        assert rc == 0
+        # File was only written after the SECOND (successful) attempt,
+        # and it carries the second set of values.
+        assert target.exists()
+        parser = configparser.ConfigParser()
+        parser.read(target)
+        assert parser["default"]["access_key"] == "ACCESS2"
+        assert parser["default"]["host_base"] == "good.example"
+        out = capsys.readouterr().out
+        assert "FAILED" in out
+        assert "Configured." in out
+
+    def test_save_anyway_writes_broken_config(self, tmp_path, monkeypatch, capsys):
+        """Offline-configuration case: operator explicitly opts in to saving broken values."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("S3CMD_CONFIG", raising=False)
+        target = tmp_path / "offline.cfg"
+
+        monkeypatch.setattr(
+            config_cmd,
+            "_try_connect",
+            lambda *_a, **_kw: "EndpointConnectionError: not on the network",
+        )
+
+        _drive_prompts(
+            monkeypatch,
+            text=[
+                "https://future.example",
+                "ACCESS",
+                str(target),
+            ],
+            passwords=["SECRET"],
+            confirms=[
+                False,  # "Try again?" → no
+                True,  # "Save these values anyway?" → yes, explicit opt-in
+            ],
+        )
+
+        rc = config_cmd.run_config()
+
+        assert rc == 0
+        assert target.exists()
+        out = capsys.readouterr().out
+        assert "Saving the values anyway." in out
+        assert "Configured." in out
+
+    def test_decline_both_prompts_exits_without_writing(self, tmp_path, monkeypatch, capsys):
+        """The safe default: declining both 'try again' and 'save anyway' cancels cleanly."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("S3CMD_CONFIG", raising=False)
+        target = tmp_path / "should-not-exist.cfg"
+
+        monkeypatch.setattr(
+            config_cmd,
+            "_try_connect",
+            lambda *_a, **_kw: "EndpointConnectionError: no",
+        )
+
+        _drive_prompts(
+            monkeypatch,
+            text=[
+                "https://broken.example",
+                "ACCESS",
+            ],
+            passwords=["SECRET"],
+            confirms=[
+                False,  # "Try again?" → no
+                False,  # "Save anyway?" → no, exit
+            ],
+        )
+
+        rc = config_cmd.run_config()
+
+        assert rc == 0
+        assert not target.exists()
+        out = capsys.readouterr().out
+        assert "Cancelled; no changes written." in out
+        assert "Configured." not in out
+
+
+class TestSummaryOrdering:
+    """End-of-run summary structure: 'Configured.' then optional hints."""
+
+    def test_non_default_path_note_appears_after_configured_line(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("S3CMD_CONFIG", raising=False)
+        # Non-default path so the note fires.
+        target = tmp_path / "non-default.cfg"
+
+        _drive_prompts(
+            monkeypatch,
+            text=[
+                "https://s3.kopah.uw.edu",
+                "ACCESS",
+                str(target),
+            ],
+            passwords=["SECRET"],
+        )
+        _disable_smoke(monkeypatch)
+
+        rc = config_cmd.run_config()
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        # The non-default-path note must come AFTER the "Configured." summary.
+        configured_idx = out.find("Configured.")
+        hint_idx = out.find("not the default location")
+        assert configured_idx != -1
+        assert hint_idx != -1
+        # And it must not include the old shell-snippets we removed.
+        assert "export S3CMD_CONFIG=" not in out
+        assert "$env:S3CMD_CONFIG" not in out
+        assert hint_idx > configured_idx
+
+
+class TestResolvePathDoesNotFollowSymlinks:
+    def test_symlink_displayed_as_typed(self, tmp_path):
+        # ~/.s3cfg → /some/real/file is the surprising case the operator hit.
+        real = tmp_path / "real-config.cfg"
+        real.write_text("real")
+        link = tmp_path / "symlinked-config"
+        link.symlink_to(real)
+
+        resolved = config_cmd._resolve_path(str(link))
+
+        # We preserve the path the operator typed; we do NOT show them
+        # /Users/.../some-other-place that the link happens to target.
+        assert resolved == link
+        assert resolved != real
 
 
 class TestReprompts:
