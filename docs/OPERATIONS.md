@@ -10,14 +10,18 @@ For the Preservation team using `kopah-bagit` day-to-day.
    curl -LsSf https://astral.sh/uv/install.sh | sh
    ```
 
-2. **Get your Kopah credentials**. Either:
+2. **Get your Kopah credentials**. kopah-bagit picks them up from any
+   of the following, checked in order (the same order `s3cmd` itself
+   uses for steps 1 and 2):
 
-   - You already use `s3cmd` against Kopah: set `S3CMD_CONFIG` to the
-     path of your `.s3cfg` file. That's the canonical option.
-   - You don't use `s3cmd`: set `KOPAH_ACCESS_KEY`, `KOPAH_SECRET_KEY`,
-     and `KOPAH_ENDPOINT` directly.
+   1. `$S3CMD_CONFIG` — explicit path to an s3cmd INI file.
+   2. `~/.s3cfg` — s3cmd's default config location. If you already
+      have s3cmd working against Kopah, kopah-bagit will Just Work
+      with zero extra setup.
+   3. `KOPAH_ACCESS_KEY` + `KOPAH_SECRET_KEY` + `KOPAH_ENDPOINT` env
+      vars. Useful for CI or containers without an s3cmd config file.
 
-   Either via your shell rc file, a per-project `.env` (kopah-bagit
+   Set these via your shell rc file, a per-project `.env` (kopah-bagit
    reads `./.env` if present), or your CI's secret store.
 
 3. **Verify it works:**
@@ -80,8 +84,10 @@ one run shows you everything that's wrong.
 
 ## Troubleshooting
 
-**`No Kopah credentials configured`** — neither `S3CMD_CONFIG` nor the
-three `KOPAH_*` env vars are set. See `.env.example`.
+**`No Kopah credentials configured`** — none of `$S3CMD_CONFIG`,
+`~/.s3cfg`, or the `KOPAH_*` env vars was usable. The error message
+names the `~/.s3cfg` path it actually looked at, which is useful if
+`$HOME` is unexpected (containers, CI). See `.env.example`.
 
 **`Cannot detect archive format`** — kopah-bagit only handles
 `.tar.gz`, `.tgz`, and `.zip`. `.7z` raises a specific error pointing

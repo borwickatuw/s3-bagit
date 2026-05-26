@@ -24,10 +24,10 @@ Follow user preferences in `~/.claude/CLAUDE.md` and cross-repo
 guides in `claude-meta/best-practices/` (`PYTHON.md`, `GIT.md`,
 `CLAUDE-FILES.md` apply here). Project-specific:
 
-- Two credential sources are intentionally supported. `S3CMD_CONFIG`
-  wins if set; otherwise direct `KOPAH_*` env vars. See
-  [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for the rationale (CI
-  vs. operator workstations).
+- Credentials are resolved in three steps, matching `s3cmd`'s own
+  semantics: `$S3CMD_CONFIG` → `~/.s3cfg` → `KOPAH_*` env vars. This
+  is the one place where multi-source fallback overrides the global
+  "no fallback logic" preference — see [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 - Streaming model means **single-pass**. Don't add code that requires
   re-reading the archive — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 - BagIt verification collects all errors, then reports together —
@@ -81,8 +81,8 @@ Or once published, `uvx --from kopah-bagit kopah-bagit ...`.
 - `pip-audit` against the lockfile
 
 No secrets are stored in the repo. Kopah credentials come from
-`S3CMD_CONFIG` (an s3cmd INI file) or `KOPAH_*` env vars — see
-`.env.example`.
+`$S3CMD_CONFIG`, `~/.s3cfg`, or `KOPAH_*` env vars (checked in that
+order) — see `.env.example`.
 
 ## Cross-Repository Ideas
 

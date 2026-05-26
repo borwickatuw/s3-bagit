@@ -1,14 +1,18 @@
 """Build a boto3 S3 client for Kopah (Ceph RadosGW).
 
-Two credential sources are supported, checked in this order:
+Credential sources, checked in order:
 
-1. ``S3CMD_CONFIG`` — path to an s3cmd INI file. Read ``access_key``,
-   ``secret_key``, and ``host_base`` from its ``[default]`` section.
-2. Direct env vars: ``KOPAH_ACCESS_KEY``, ``KOPAH_SECRET_KEY``,
+1. ``$S3CMD_CONFIG`` — path to an s3cmd INI file.
+2. ``~/.s3cfg`` — s3cmd's own default config location (used when
+   ``$S3CMD_CONFIG`` is unset). Operators who already have s3cmd
+   working against Kopah get kopah-bagit credentials "for free".
+3. Direct env vars: ``KOPAH_ACCESS_KEY``, ``KOPAH_SECRET_KEY``,
    ``KOPAH_ENDPOINT``.
 
-If neither is fully configured, :class:`ConfigError` is raised with a
-message listing both options. The two-source policy is documented in
+Steps 1+2 mirror s3cmd's own config resolution (s3cmd reads
+``~/.s3cfg`` when ``-c`` / ``S3CMD_CONFIG`` is not supplied). If none
+of the three is fully configured, :class:`ConfigError` is raised with
+a message listing the options. Policy is documented in
 ``.env.example`` and ``docs/OPERATIONS.md``.
 """
 
@@ -24,9 +28,14 @@ from kopah_bagit.exceptions import ConfigError
 _DEFAULT_POOL = 32
 
 
+def _default_s3cfg_path() -> Path:
+    """s3cmd's hardcoded default config path."""
+    return Path.home() / ".s3cfg"
+
+
 def _from_s3cmd_config(cfg_path: str) -> tuple[str, str, str]:
     if not Path(cfg_path).exists():
-        raise ConfigError(f"S3CMD_CONFIG path does not exist: {cfg_path}")
+        raise ConfigError(f"s3cmd config path does not exist: {cfg_path}")
     parser = configparser.ConfigParser()
     parser.read(cfg_path)
     if "default" not in parser:
@@ -61,11 +70,15 @@ def _resolve_credentials() -> tuple[str, str, str]:
     cfg_path = os.environ.get("S3CMD_CONFIG", "").strip()
     if cfg_path:
         return _from_s3cmd_config(cfg_path)
+    default_cfg = _default_s3cfg_path()
+    if default_cfg.exists():
+        return _from_s3cmd_config(str(default_cfg))
     if any(os.environ.get(k) for k in ("KOPAH_ACCESS_KEY", "KOPAH_SECRET_KEY", "KOPAH_ENDPOINT")):
         return _from_direct_env()
     raise ConfigError(
         "No Kopah credentials configured. Set one of:\n"
-        "  • S3CMD_CONFIG=/path/to/.s3cfg (recommended)\n"
+        f"  • {default_cfg} (s3cmd's default config — recommended)\n"
+        "  • S3CMD_CONFIG=/path/to/.s3cfg (override for a non-default location)\n"
         "  • KOPAH_ACCESS_KEY + KOPAH_SECRET_KEY + KOPAH_ENDPOINT\n"
         "See .env.example for details."
     )

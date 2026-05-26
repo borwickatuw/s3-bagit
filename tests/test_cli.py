@@ -82,10 +82,13 @@ class TestVerifyCommand:
 
 
 class TestConfigErrors:
-    def test_missing_creds_exits_2(self, capsys, monkeypatch):
+    def test_missing_creds_exits_2(self, capsys, monkeypatch, tmp_path):
         # No patched_client here — let load_client() run for real.
+        # Clear env vars AND point HOME at an empty dir so the developer's
+        # own ~/.s3cfg can't accidentally satisfy credential resolution.
         for k in ("S3CMD_CONFIG", "KOPAH_ACCESS_KEY", "KOPAH_SECRET_KEY", "KOPAH_ENDPOINT"):
             monkeypatch.delenv(k, raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
         rc = main(["verify", "s3://x/"])
         assert rc == 2
         assert "No Kopah credentials" in capsys.readouterr().err

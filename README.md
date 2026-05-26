@@ -27,9 +27,11 @@ uv run kopah-bagit extract \
     s3://preserved/bag-001/
 ```
 
-Kopah credentials come from either `S3CMD_CONFIG` (path to your s3cmd
-INI file) or the `KOPAH_ACCESS_KEY` / `KOPAH_SECRET_KEY` /
-`KOPAH_ENDPOINT` env vars. See `.env.example`.
+Kopah credentials are resolved in s3cmd's own order: `$S3CMD_CONFIG`
+if set, then `~/.s3cfg`, then the `KOPAH_ACCESS_KEY` /
+`KOPAH_SECRET_KEY` / `KOPAH_ENDPOINT` env vars. If you already have
+s3cmd working against Kopah, there's nothing to configure. See
+`.env.example`.
 
 ## Documentation
 

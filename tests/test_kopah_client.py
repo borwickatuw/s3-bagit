@@ -9,9 +9,15 @@ from kopah_bagit.kopah_client import _resolve_credentials
 
 
 @pytest.fixture(autouse=True)
-def _clear_env(monkeypatch):
+def _isolated_env(monkeypatch, tmp_path):
+    """Clear env vars AND point HOME at an empty dir.
+
+    Otherwise the developer's own ~/.s3cfg would silently make every
+    "no credentials configured" test pass for the wrong reason.
+    """
     for k in ("S3CMD_CONFIG", "KOPAH_ACCESS_KEY", "KOPAH_SECRET_KEY", "KOPAH_ENDPOINT"):
         monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
 
 
 def test_no_creds_set_raises(monkeypatch):
@@ -91,3 +97,78 @@ def test_s3cmd_missing_key_raises(monkeypatch, tmp_path):
     monkeypatch.setenv("S3CMD_CONFIG", str(cfg))
     with pytest.raises(ConfigError, match="host_base"):
         _resolve_credentials()
+
+
+def test_default_s3cfg_used_when_env_unset(tmp_path):
+    """If ~/.s3cfg exists and $S3CMD_CONFIG is unset, the default is picked up."""
+    cfg = tmp_path / ".s3cfg"  # HOME is monkeypatched to tmp_path above.
+    cfg.write_text(
+        textwrap.dedent(
+            """\
+            [default]
+            access_key = HOME_AK
+            secret_key = HOME_SK
+            host_base = home.kopah.test
+            """
+        )
+    )
+    assert _resolve_credentials() == ("HOME_AK", "HOME_SK", "https://home.kopah.test")
+
+
+def test_env_var_wins_over_default_s3cfg(tmp_path, monkeypatch):
+    """An explicit $S3CMD_CONFIG overrides ~/.s3cfg (s3cmd's own semantics)."""
+    home_cfg = tmp_path / ".s3cfg"
+    home_cfg.write_text(
+        textwrap.dedent(
+            """\
+            [default]
+            access_key = HOME
+            secret_key = HOME
+            host_base = home.test
+            """
+        )
+    )
+    explicit = tmp_path / "explicit.s3cfg"
+    explicit.write_text(
+        textwrap.dedent(
+            """\
+            [default]
+            access_key = EXPLICIT
+            secret_key = EXPLICIT
+            host_base = explicit.test
+            """
+        )
+    )
+    monkeypatch.setenv("S3CMD_CONFIG", str(explicit))
+    access, _secret, endpoint = _resolve_credentials()
+    assert access == "EXPLICIT"
+    assert endpoint == "https://explicit.test"
+
+
+def test_default_s3cfg_wins_over_direct_env(tmp_path, monkeypatch):
+    """When ~/.s3cfg is present, it beats the KOPAH_* fallback."""
+    cfg = tmp_path / ".s3cfg"
+    cfg.write_text(
+        textwrap.dedent(
+            """\
+            [default]
+            access_key = HOME
+            secret_key = HOME
+            host_base = home.test
+            """
+        )
+    )
+    monkeypatch.setenv("KOPAH_ACCESS_KEY", "FROM_ENV")
+    monkeypatch.setenv("KOPAH_SECRET_KEY", "FROM_ENV")
+    monkeypatch.setenv("KOPAH_ENDPOINT", "https://env.test")
+    access, _secret, endpoint = _resolve_credentials()
+    assert access == "HOME"
+    assert endpoint == "https://home.test"
+
+
+def test_error_message_lists_default_s3cfg_path(tmp_path):
+    """The 'no credentials' error names the ~/.s3cfg path it actually checked."""
+    with pytest.raises(ConfigError) as exc_info:
+        _resolve_credentials()
+    # tmp_path is the monkeypatched HOME, so default path should be tmp_path/.s3cfg.
+    assert str(tmp_path / ".s3cfg") in str(exc_info.value)
