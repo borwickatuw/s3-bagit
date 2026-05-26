@@ -19,11 +19,21 @@ RFC 8493 §4.1.2 names **TAR**, **ZIP**, and **TGZ**:
 > Common serialization formats include TAR, ZIP, and TAR with GZIP
 > compression (TGZ).
 
-s3-bagit handles `.tar.gz`, `.tgz`, and `.zip`. Plain uncompressed
-`.tar` is not currently in scope — adding it would be a small change to
-`src/s3_bagit/s3_url.detect_format` and a new `extract_tar`
-function (the standard library's `tarfile.open(..., mode="r|")`
-streams uncompressed tar the same way the gzip variant does).
+s3-bagit handles all of those plus the two other common tar-with-compression
+variants:
+
+| Extension(s)            | Notes                                                |
+| ----------------------- | ---------------------------------------------------- |
+| `.tar`                  | uncompressed                                         |
+| `.tar.gz`, `.tgz`       | gzip — the format named in RFC 8493 §4.1.2 as "TGZ"  |
+| `.tar.bz2`, `.tbz2`     | bzip2                                                |
+| `.tar.xz`, `.txz`       | xz / lzma                                            |
+| `.zip`                  | streaming via `stream-unzip`                         |
+
+All five share the same streaming dispatch in
+`src/s3_bagit/extract.py` — `tarfile.open(fileobj=..., mode=m)` handles
+each tar variant in a single non-seeking pass; zip is streamed by
+`stream-unzip`.
 
 ### Why not 7z?
 
