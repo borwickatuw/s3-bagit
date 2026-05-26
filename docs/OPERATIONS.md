@@ -84,6 +84,12 @@ one run shows you everything that's wrong.
 
 ## Troubleshooting
 
+**`looks like an archive file, not an extracted-bag prefix`** — you
+pointed `verify` at a `.tar.gz` / `.tgz` / `.zip` / `.7z` URL. `verify`
+operates on an extracted bag (a directory of files at an S3 prefix),
+not on the serialized archive. Run `kopah-bagit extract <archive_url>
+<dest_url>` first — that command auto-verifies the result.
+
 **`No Kopah credentials configured`** — none of `$S3CMD_CONFIG`,
 `~/.s3cfg`, or the `KOPAH_*` env vars was usable. The error message
 names the `~/.s3cfg` path it actually looked at, which is useful if

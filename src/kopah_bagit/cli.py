@@ -138,7 +138,33 @@ def _cmd_extract(args: argparse.Namespace, client) -> int:
     return _EXIT_OK if result.ok else _EXIT_VERIFY_FAILED
 
 
+_ARCHIVE_SUFFIXES = (".tar.gz", ".tgz", ".zip", ".7z")
+
+
+def _guard_against_archive_url(bag_url: str) -> None:
+    """Reject `verify <archive>` with a message pointing at `extract` instead.
+
+    A common operator mistake is to point ``verify`` at a serialized
+    bag (``...bag.tar.gz``) rather than an extracted-bag prefix. Without
+    this guard the symptom is ``No objects found`` followed by
+    ``RESULT: INVALID``, which implies we checked a bag and it failed —
+    misleading. Fail fast with a clear ConfigError instead.
+    """
+    if bag_url.lower().rstrip("/").endswith(_ARCHIVE_SUFFIXES):
+        raise ConfigError(
+            f"{bag_url} looks like an archive file, not an extracted-bag prefix.\n"
+            f"`verify` operates on an already-extracted bag whose files live "
+            f"at an S3 prefix.\n"
+            f"To check this archive's contents, extract it first "
+            f"(extract auto-verifies):\n"
+            f"    kopah-bagit extract {bag_url} s3://<bucket>/<dest-prefix>/\n"
+            f"Verifying a serialized bag without extracting it is not "
+            f"implemented in v1 — see docs/BAGIT-SPEC.md."
+        )
+
+
 def _cmd_verify(args: argparse.Namespace, client) -> int:
+    _guard_against_archive_url(args.bag_url)
     bucket, prefix = parse_s3_prefix(args.bag_url)
     result = verify_bag(client, bucket, prefix)
     _print_verify_report(result)

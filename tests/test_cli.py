@@ -97,3 +97,31 @@ class TestConfigErrors:
         rc = main(["extract", "s3://src-bucket/file.rar", "s3://dest-bucket/out/"])
         assert rc == 2
         assert "Cannot detect archive format" in capsys.readouterr().err
+
+
+class TestVerifyGuard:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "s3://bucket/bags/foo.tar.gz",
+            "s3://bucket/bags/foo.tgz",
+            "s3://bucket/bags/foo.zip",
+            "s3://bucket/bags/foo.7z",
+            "s3://bucket/bags/FOO.TAR.GZ",
+            "s3://bucket/bags/foo.zip/",  # trailing slash still detected
+        ],
+    )
+    def test_archive_url_for_verify_exits_2_with_extract_hint(self, patched_client, capsys, url):
+        rc = main(["verify", url])
+        captured = capsys.readouterr()
+        assert rc == 2, captured.err
+        assert "RESULT:" not in captured.out  # No verify report printed.
+        assert "looks like an archive file" in captured.err
+        assert "kopah-bagit extract" in captured.err
+
+    def test_prefix_url_is_not_guarded(self, patched_client, capsys):
+        # A normal prefix (no archive suffix) is allowed through to verify_bag.
+        # The bucket is empty so verify will fail, but with the *correct* error.
+        rc = main(["verify", "s3://dest-bucket/some-bag/"])
+        assert rc == 1  # Verify failed, not config error.
+        assert "RESULT: INVALID" in capsys.readouterr().out
