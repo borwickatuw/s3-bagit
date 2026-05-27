@@ -1955,7 +1955,8 @@ wheels = [
 
 [[package]]
 name = "s3-archive"
-source = { editable = "../s3-archive" }
+version = "1.2.0"
+source = { git = "https://github.com/borwickatuw/s3-archive?tag=v1.2.0#fff7fc1e73fa91442e2697d7a97c06e3a1e891fa" }
 dependencies = [
     { name = "boto3" },
     { name = "py7zr" },
@@ -1965,30 +1966,6 @@ dependencies = [
     { name = "stream-zip" },
     { name = "tqdm" },
     { name = "zstandard" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "boto3", specifier = ">=1.35" },
-    { name = "py7zr", specifier = ">=1.0,<2.0" },
-    { name = "python-dotenv", specifier = ">=1.0" },
-    { name = "questionary", specifier = ">=2.0" },
-    { name = "stream-unzip", specifier = ">=0.0.71" },
-    { name = "stream-zip", specifier = ">=0.0.73" },
-    { name = "tqdm", specifier = ">=4.67" },
-    { name = "zstandard", specifier = ">=0.22" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "bandit", extras = ["toml"], specifier = ">=1.7" },
-    { name = "pip-audit", specifier = ">=2.7" },
-    { name = "ruff", specifier = ">=0.6" },
-]
-test = [
-    { name = "moto", extras = ["s3", "server"], specifier = ">=5.0" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-cov", specifier = ">=4.0" },
 ]
 
 [[package]]
@@ -2018,7 +1995,7 @@ test = [
 requires-dist = [
     { name = "boto3", specifier = ">=1.35" },
     { name = "python-dotenv", specifier = ">=1.0" },
-    { name = "s3-archive", editable = "../s3-archive" },
+    { name = "s3-archive", git = "https://github.com/borwickatuw/s3-archive?tag=v1.2.0" },
     { name = "stream-unzip", specifier = ">=0.0.71" },
     { name = "tqdm", specifier = ">=4.67" },
 ]
