@@ -61,7 +61,7 @@ def _is_tag_file_name(name: str) -> bool:
     return base.startswith("tagmanifest-") and base.endswith(".txt")
 
 
-def _read_tag_files(client, bucket: str, key: str, fmt: str) -> dict[str, bytes]:
+def _read_tag_files(src_client, bucket: str, key: str, fmt: str) -> dict[str, bytes]:
     """Stream an archive once; capture tag-file bodies, drain payload bytes.
 
     Single loop over :func:`s3_archive.members.iter_archive_members`
@@ -71,7 +71,7 @@ def _read_tag_files(client, bucket: str, key: str, fmt: str) -> dict[str, bytes]
     """
     captured: dict[str, bytes] = {}
     try:
-        member_iter = iter_archive_members(client, bucket, key, fmt)
+        member_iter = iter_archive_members(src_client, bucket, key, fmt)
     except UnsupportedArchiveFormatError as exc:
         raise BagError(f"Unsupported archive format for verify-against: {fmt!r}") from exc
     for member in member_iter:
@@ -116,9 +116,9 @@ def _strip_bag_root(captured: dict[str, bytes], bag_root: str) -> dict[str, byte
     return out
 
 
-def _list_target_objects(client, bucket: str, prefix: str) -> dict[str, int]:
+def _list_target_objects(dst_client, bucket: str, prefix: str) -> dict[str, int]:
     """Return ``{relative_path: size}`` for objects under *prefix*."""
-    paginator = client.get_paginator("list_objects_v2")
+    paginator = dst_client.get_paginator("list_objects_v2")
     out: dict[str, int] = {}
     for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
         for obj in page.get("Contents", []):
@@ -133,7 +133,8 @@ def _list_target_objects(client, bucket: str, prefix: str) -> dict[str, int]:
 
 
 def verify_against(
-    client,
+    src_client,
+    dst_client,
     archive_bucket: str,
     archive_key: str,
     archive_fmt: str,
@@ -145,6 +146,11 @@ def verify_against(
     verbose: bool = False,
 ) -> BagVerifyResult:
     """Verify *target_prefix*'s files against the manifests inside the bag at *archive_key*.
+
+    *src_client* reads the archive object; *dst_client* lists and
+    hashes the target prefix. They may be the same boto3 client
+    (single-endpoint workflows) or two clients pointed at different
+    endpoints — see s3-archive's ``client_for`` resolver.
 
     The target is treated as "flat" — manifest entries ``data/<rel>``
     correspond to objects at ``s3://target_bucket/<target_prefix><rel>``.
@@ -164,7 +170,7 @@ def verify_against(
         )
 
     try:
-        captured = _read_tag_files(client, archive_bucket, archive_key, archive_fmt)
+        captured = _read_tag_files(src_client, archive_bucket, archive_key, archive_fmt)
     except ArchiveReadError as exc:
         result.fail(f"Could not read archive: {exc}")
         return result
@@ -222,7 +228,7 @@ def verify_against(
             target_rel = rel[len("data/") :]
             expected_by_target.setdefault(target_rel, {})[algo] = expected
 
-    target_objects = _list_target_objects(client, target_bucket, target_prefix)
+    target_objects = _list_target_objects(dst_client, target_bucket, target_prefix)
     if not target_objects:
         result.fail(f"No objects found at target {target_url}")
         return result
@@ -236,7 +242,7 @@ def verify_against(
         if verbose:
             log.info("  %s", target_rel)
         actuals = stream_hash_object(
-            client, target_bucket, target_prefix + target_rel, algorithms_needed
+            dst_client, target_bucket, target_prefix + target_rel, algorithms_needed
         )
         for algo, expected in expected_map.items():
             actual = actuals[algo].lower()

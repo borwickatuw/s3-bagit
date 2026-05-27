@@ -11,8 +11,7 @@ dynamic = ["version"]
 dependencies = [
     "boto3>=1.35",
     "python-dotenv>=1.0",
-    "questionary>=2.0",
-    "s3-archive>=1.0.0",
+    "s3-archive>=1.2.0",
     "stream-unzip>=0.0.71",
     "tqdm>=4.67",
 ]
@@ -21,7 +20,11 @@ dependencies = [
 s3-bagit = "s3_bagit.cli:main"
 
 [tool.uv.sources]
-s3-archive = { git = "https://github.com/borwickatuw/s3-archive", tag = "v1.0.0" }
+# Switch to `{ git = "...", tag = "v1.2.0" }` at release time. Local
+# path source is used during development so this repo can be iterated
+# against an unreleased local s3-archive checkout (the plan in
+# `../s3-archive/docs/S3-MULTI-CONFIG.md` calls this out).
+s3-archive = { path = "../s3-archive", editable = true }
 
 [dependency-groups]
 dev = [
@@ -32,7 +35,7 @@ dev = [
 test = [
     "pytest>=8.0",
     "pytest-cov>=4.0",
-    "moto[s3]>=5.0",
+    "moto[s3,server]>=5.0",
 ]
 
 [build-system]
@@ -94,9 +97,6 @@ select = [
 ]
 "src/s3_bagit/cli.py" = [
     "T20",     # CLI prints to user
-]
-"src/s3_bagit/config_cmd.py" = [
-    "T20",     # interactive CLI subcommand prints to user
 ]
 "src/s3_bagit/issue.py" = [
     "T20",     # CLI subcommand prints the URL fallback

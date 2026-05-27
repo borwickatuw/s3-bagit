@@ -107,7 +107,8 @@ def _build_tagmanifest_txt(
 
 
 def create_bag(
-    client,
+    src_client,
+    dst_client,
     src_bucket: str,
     src_prefix: str,
     dest_bucket: str,
@@ -119,6 +120,11 @@ def create_bag(
     verbose: bool = False,
 ) -> tuple[int, int]:
     """Stream ``s3://src_bucket/src_prefix/`` into a BagIt ``.tar.gz`` at ``s3://dest_bucket/dest_key``.
+
+    *src_client* reads the per-object source bodies; *dst_client*
+    writes the single archive object. They may be the same boto3
+    client (single-endpoint workflows) or two clients pointed at
+    different endpoints — see s3-archive's ``client_for`` resolver.
 
     Returns ``(payload_file_count, payload_total_octets)``.
 
@@ -142,7 +148,7 @@ def create_bag(
     # the same constant prefix stripped). Either way the manifest is
     # byte-deterministic across runs, which matters for operators
     # diffing two bag creations.
-    objects = list_objects(client, src_bucket, src_prefix, sort=True)
+    objects = list_objects(src_client, src_bucket, src_prefix, sort=True)
     if not objects:
         raise BagError(f"Source prefix s3://{src_bucket}/{src_prefix} is empty; nothing to bag.")
 
@@ -162,7 +168,7 @@ def create_bag(
     def _upload() -> None:
         try:
             with os.fdopen(rfd, "rb", buffering=_PIPE_READ_CHUNK) as r:
-                client.upload_fileobj(PipeReader(r), dest_bucket, dest_key)
+                dst_client.upload_fileobj(PipeReader(r), dest_bucket, dest_key)
         except BaseException as exc:  # noqa: BLE001 — re-raised on main thread
             upload_error.append(exc)
 
@@ -187,7 +193,7 @@ def create_bag(
                 size = obj["Size"]
                 if verbose:
                     log.info("  %s (%d bytes)", rel, size)
-                body = client.get_object(Bucket=src_bucket, Key=obj["Key"])["Body"]
+                body = src_client.get_object(Bucket=src_bucket, Key=obj["Key"])["Body"]
                 # HashingTap tees bytes into tar.addfile (which reads
                 # exactly tarinfo.size bytes) and into a single-
                 # algorithm hasher in parallel. One S3 GET produces

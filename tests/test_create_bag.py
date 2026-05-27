@@ -44,6 +44,7 @@ class TestCreateBagRoundTrip:
 
         count, octets = create_bag(
             s3_client,
+            s3_client,
             "src-bucket",
             "incoming/source-dir/",
             "dest-bucket",
@@ -56,6 +57,7 @@ class TestCreateBagRoundTrip:
 
         # Re-extract the produced archive into a fresh prefix and verify.
         extract(
+            s3_client,
             s3_client,
             "dest-bucket",
             "bags/my-bag.tar.gz",
@@ -73,6 +75,7 @@ class TestCreateBagRoundTrip:
         _put_source_files(s3_client, "src-bucket", "src/", files)
 
         create_bag(
+            s3_client,
             s3_client,
             "src-bucket",
             "src/",
@@ -93,6 +96,7 @@ class TestCreateBagRoundTrip:
         files = {"a.txt": b"x" * 1000, "b.txt": b"y" * 1000}
         _put_source_files(s3_client, "src-bucket", "src/", files)
         create_bag(
+            s3_client,
             s3_client,
             "src-bucket",
             "src/",
@@ -126,6 +130,7 @@ class TestEmptyPrefix:
         with pytest.raises(BagError, match="empty; nothing to bag"):
             create_bag(
                 s3_client,
+                s3_client,
                 "src-bucket",
                 "empty-dir/",
                 "dest-bucket",
@@ -138,6 +143,7 @@ class TestBagInfoOverrides:
     def test_default_bag_info_fields_present(self, s3_client):
         _put_source_files(s3_client, "src-bucket", "src/", {"x.txt": b"data"})
         create_bag(
+            s3_client,
             s3_client,
             "src-bucket",
             "src/",
@@ -155,6 +161,7 @@ class TestBagInfoOverrides:
     def test_user_bag_info_overrides_default_and_appends(self, s3_client):
         _put_source_files(s3_client, "src-bucket", "src/", {"x.txt": b"data"})
         create_bag(
+            s3_client,
             s3_client,
             "src-bucket",
             "src/",
@@ -184,6 +191,7 @@ class TestSha512:
         _put_source_files(s3_client, "src-bucket", "src/", {"x.txt": b"data"})
         create_bag(
             s3_client,
+            s3_client,
             "src-bucket",
             "src/",
             "dest-bucket",
@@ -191,7 +199,7 @@ class TestSha512:
             bag_name="bag",
             algorithm="sha512",
         )
-        extract(s3_client, "dest-bucket", "out.tar.gz", "dest-bucket", "ext/", "tar.gz")
+        extract(s3_client, s3_client, "dest-bucket", "out.tar.gz", "dest-bucket", "ext/", "tar.gz")
         result = verify_bag(s3_client, "dest-bucket", "ext/bag/")
         assert result.ok, result.errors
         assert result.manifest_algorithms == ["sha512"]
@@ -203,6 +211,7 @@ class TestBagNameValidation:
         _put_source_files(s3_client, "src-bucket", "src/", {"x.txt": b"data"})
         with pytest.raises(BagError, match="single path segment"):
             create_bag(
+                s3_client,
                 s3_client,
                 "src-bucket",
                 "src/",
@@ -217,6 +226,7 @@ class TestUnknownAlgorithm:
         # No source files needed — algorithm is validated before listing.
         with pytest.raises(BagError, match="Unknown hash algorithm"):
             create_bag(
+                s3_client,
                 s3_client,
                 "src-bucket",
                 "src/",

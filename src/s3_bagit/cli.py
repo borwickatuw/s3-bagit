@@ -35,10 +35,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from s3_archive.exceptions import ConfigError as _S3ArchiveConfigError
+from s3_archive.config_cmd import validate_profile_name as _validate_profile_name
 from s3_archive.exceptions import UnsupportedArchiveFormatError
 from s3_archive.extract import extract
 from s3_archive.ls import list_archive
+from s3_archive.s3_client import client_for
 from s3_archive.url import detect_format, looks_like_archive_url, parse_s3_prefix, parse_s3_url
 
 from s3_bagit import REPO_URL, __version__
@@ -47,7 +48,6 @@ from s3_bagit.create_bag import create_bag
 from s3_bagit.exceptions import BagError, ConfigError
 from s3_bagit.issue import open_issue
 from s3_bagit.log_config import get_logger, setup_console
-from s3_bagit.s3_client import load_client
 from s3_bagit.verify import BagVerifyResult, verify_bag
 from s3_bagit.verify_against import verify_against
 
@@ -61,6 +61,20 @@ _EXIT_CONFIG_ERROR = 2
 _EXIT_INTERRUPTED = 130
 
 _ISSUE_HINT = "For help, run: s3-bagit issue"
+
+
+def _argparse_profile(value: str) -> str:
+    """argparse `type=` for --profile that maps ConfigError → ArgumentTypeError.
+
+    argparse handles `ArgumentTypeError` / `ValueError` / `TypeError`
+    from a `type=` callable cleanly; anything else surfaces as a
+    traceback. We catch the library-level ConfigError here and re-raise
+    in argparse's preferred form so the user sees a clean message.
+    """
+    try:
+        return _validate_profile_name(value)
+    except ConfigError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -208,9 +222,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Source archive URL, e.g. s3://my-bucket/incoming/bag.tar.gz",
     )
 
-    sub.add_parser(
+    p_config = sub.add_parser(
         "config",
-        help="Interactively write an s3cmd-INI credentials file (~/.s3cfg by default).",
+        help=(
+            "Interactively write an s3cmd-INI credentials file "
+            "(~/.s3cfg by default; ~/.s3cfg-<name> with --profile)."
+        ),
+    )
+    p_config.add_argument(
+        "--profile",
+        default="default",
+        type=_argparse_profile,
+        help=(
+            "Profile name to configure. Default profile writes ~/.s3cfg; "
+            "any other name writes ~/.s3cfg-<name>. Must match [A-Za-z0-9_-]+."
+        ),
     )
 
     p_issue = sub.add_parser(
@@ -255,19 +281,25 @@ def _print_verify_report(result: BagVerifyResult) -> None:
         print("RESULT: VALID")
 
 
-def _cmd_extract(args: argparse.Namespace, client) -> int:
-    archive_bucket, archive_key = parse_s3_url(args.archive_url)
-    if not archive_key:
+def _cmd_extract(args: argparse.Namespace) -> int:
+    src = parse_s3_url(args.archive_url)
+    if not src.key:
         raise ConfigError(f"Archive URL needs a key: {args.archive_url!r}")
-    dest_bucket, dest_prefix = parse_s3_prefix(args.dest_url)
+    dst = parse_s3_prefix(args.dest_url)
     fmt = detect_format(args.archive_url)
 
+    # Resolve both clients up-front so a missing profile fails fast,
+    # before any archive stream is opened.
+    src_client = client_for(src.profile)
+    dst_client = client_for(dst.profile)
+
     extract(
-        client,
-        archive_bucket,
-        archive_key,
-        dest_bucket,
-        dest_prefix,
+        src_client,
+        dst_client,
+        src.bucket,
+        src.key,
+        dst.bucket,
+        dst.key,
         fmt,
         dry_run=args.dry_run,
         verbose=args.verbose,
@@ -277,7 +309,8 @@ def _cmd_extract(args: argparse.Namespace, client) -> int:
         return _EXIT_OK
 
     log.info("Verifying extracted bag…")
-    result = verify_bag(client, dest_bucket, dest_prefix)
+    # Verify reads from where the bag now lives — that's the destination.
+    result = verify_bag(dst_client, dst.bucket, dst.key)
     _print_verify_report(result)
     return _EXIT_OK if result.ok else _EXIT_VERIFY_FAILED
 
@@ -307,28 +340,34 @@ def _guard_against_archive_url(bag_url: str) -> None:
         )
 
 
-def _cmd_verify(args: argparse.Namespace, client) -> int:
+def _cmd_verify(args: argparse.Namespace) -> int:
     _guard_against_archive_url(args.bag_url)
-    bucket, prefix = parse_s3_prefix(args.bag_url)
-    result = verify_bag(client, bucket, prefix)
+    bag = parse_s3_prefix(args.bag_url)
+    result = verify_bag(client_for(bag.profile), bag.bucket, bag.key)
     _print_verify_report(result)
     return _EXIT_OK if result.ok else _EXIT_VERIFY_FAILED
 
 
-def _cmd_verify_against(args: argparse.Namespace, client) -> int:
-    archive_bucket, archive_key = parse_s3_url(args.archive_url)
-    if not archive_key:
+def _cmd_verify_against(args: argparse.Namespace) -> int:
+    src = parse_s3_url(args.archive_url)
+    if not src.key:
         raise ConfigError(f"Archive URL needs a key: {args.archive_url!r}")
     archive_fmt = detect_format(args.archive_url)
-    target_bucket, target_prefix = parse_s3_prefix(args.target_url)
+    dst = parse_s3_prefix(args.target_url)
+
+    # Resolve both clients up-front so a missing profile fails fast,
+    # before any archive stream is opened.
+    src_client = client_for(src.profile)
+    dst_client = client_for(dst.profile)
 
     result = verify_against(
-        client,
-        archive_bucket,
-        archive_key,
+        src_client,
+        dst_client,
+        src.bucket,
+        src.key,
         archive_fmt,
-        target_bucket,
-        target_prefix,
+        dst.bucket,
+        dst.key,
         archive_url=args.archive_url,
         target_url=args.target_url,
         verbose=args.verbose,
@@ -358,24 +397,30 @@ def _parse_bag_info_args(items: list[str]) -> list[tuple[str, str]]:
     return out
 
 
-def _cmd_create_bag(args: argparse.Namespace, client) -> int:
-    src_bucket, src_prefix = parse_s3_prefix(args.src_url)
-    dest_bucket, dest_key = parse_s3_url(args.dest_url)
-    if not dest_key:
+def _cmd_create_bag(args: argparse.Namespace) -> int:
+    src = parse_s3_prefix(args.src_url)
+    dst = parse_s3_url(args.dest_url)
+    if not dst.key:
         raise ConfigError(f"Destination URL needs a key: {args.dest_url!r}")
-    if not dest_key.lower().endswith(_BAG_ARCHIVE_SUFFIXES):
+    if not dst.key.lower().endswith(_BAG_ARCHIVE_SUFFIXES):
         raise ConfigError(
             f"Destination URL must end with .tar.gz or .tgz (got {args.dest_url!r}). "
             "create-bag only produces gzip-compressed tar archives in v1."
         )
 
     bag_info = _parse_bag_info_args(args.bag_info)
+    # Resolve both clients up-front so a missing profile fails fast,
+    # before any source object is fetched.
+    src_client = client_for(src.profile)
+    dst_client = client_for(dst.profile)
+
     create_bag(
-        client,
-        src_bucket,
-        src_prefix,
-        dest_bucket,
-        dest_key,
+        src_client,
+        dst_client,
+        src.bucket,
+        src.key,
+        dst.bucket,
+        dst.key,
         bag_name=args.bag_name,
         algorithm=args.algorithm,
         bag_info=bag_info,
@@ -384,17 +429,17 @@ def _cmd_create_bag(args: argparse.Namespace, client) -> int:
     return _EXIT_OK
 
 
-def _cmd_ls(args: argparse.Namespace, client) -> int:
-    archive_bucket, archive_key = parse_s3_url(args.archive_url)
-    if not archive_key:
+def _cmd_ls(args: argparse.Namespace) -> int:
+    src = parse_s3_url(args.archive_url)
+    if not src.key:
         raise ConfigError(f"Archive URL needs a key: {args.archive_url!r}")
     fmt = detect_format(args.archive_url)
-    list_archive(client, archive_bucket, archive_key, fmt)
+    list_archive(client_for(src.profile), src.bucket, src.key, fmt)
     return _EXIT_OK
 
 
-def _cmd_config(_args: argparse.Namespace) -> int:
-    return run_config()
+def _cmd_config(args: argparse.Namespace) -> int:
+    return run_config(profile=args.profile)
 
 
 def _cmd_issue(args: argparse.Namespace) -> int:
@@ -418,23 +463,27 @@ def main(argv: list[str] | None = None) -> int:
             return _cmd_config(args)
         if args.command == "issue":
             return _cmd_issue(args)
-
-        client = load_client()
+        # The rest each build their own client(s) via `client_for(profile)`
+        # inside the dispatcher so a missing profile fails before any
+        # stream opens.
         if args.command == "extract":
-            return _cmd_extract(args, client)
+            return _cmd_extract(args)
         if args.command == "verify":
-            return _cmd_verify(args, client)
+            return _cmd_verify(args)
         if args.command == "verify-against":
-            return _cmd_verify_against(args, client)
+            return _cmd_verify_against(args)
         if args.command == "create-bag":
-            return _cmd_create_bag(args, client)
+            return _cmd_create_bag(args)
         if args.command == "ls":
-            return _cmd_ls(args, client)
+            return _cmd_ls(args)
     except KeyboardInterrupt:
         # Operator hit Ctrl-C — exit cleanly instead of dumping a traceback.
         print("\nCancelled.", file=sys.stderr)
         return _EXIT_INTERRUPTED
-    except (ConfigError, _S3ArchiveConfigError) as exc:
+    except ConfigError as exc:
+        # `s3_bagit.exceptions.ConfigError` is now an alias for
+        # `s3_archive.exceptions.ConfigError`, so this single-catch
+        # covers both s3-bagit and s3-archive raise sites.
         print(f"Configuration error: {exc}", file=sys.stderr)
         print(_ISSUE_HINT, file=sys.stderr)
         return _EXIT_CONFIG_ERROR

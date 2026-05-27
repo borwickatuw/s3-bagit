@@ -12,8 +12,13 @@ from .conftest import build_7z, build_tar_gz, build_zip, make_bag_files, upload_
 
 @pytest.fixture
 def patched_client(s3_client):
-    """Make ``load_client()`` (called from the CLI) return the moto client."""
-    with patch("s3_bagit.cli.load_client", return_value=s3_client):
+    """Make every `client_for(profile)` call in the CLI return the moto client.
+
+    Profile-aware tests (and the cross-endpoint acceptance test) override
+    this; the default here serves single-endpoint tests where source and
+    destination share one client.
+    """
+    with patch("s3_bagit.cli.client_for", return_value=s3_client):
         yield s3_client
 
 
@@ -100,10 +105,10 @@ class TestVerifyCommand:
 
 class TestConfigErrors:
     def test_missing_creds_exits_2(self, capsys, monkeypatch, tmp_path):
-        # No patched_client — let load_client() run for real. Clear every
-        # credential source AND point HOME at an empty dir, then stub
-        # boto3.Session so the test doesn't accidentally succeed via
-        # ~/.aws/credentials, an EC2 instance role, or AWS SSO.
+        # No patched_client — let the real resolver run via s3-archive.
+        # Clear every credential source AND point HOME at an empty dir,
+        # then stub boto3.Session so the test doesn't accidentally succeed
+        # via ~/.aws/credentials, an EC2 instance role, or AWS SSO.
         for k in (
             "S3CMD_CONFIG",
             "S3_ENDPOINT_URL",
@@ -115,7 +120,7 @@ class TestConfigErrors:
         ):
             monkeypatch.delenv(k, raising=False)
         monkeypatch.setenv("HOME", str(tmp_path))
-        with patch("s3_bagit.s3_client.boto3.Session") as mock_session:
+        with patch("s3_archive.s3_client.boto3.Session") as mock_session:
             mock_session.return_value.get_credentials.return_value = None
             rc = main(["verify", "s3://x/"])
         assert rc == 2
@@ -165,6 +170,7 @@ class TestVerifyAgainstCommand:
         for rel, content in payload.items():
             client.put_object(Bucket="src-bucket", Key=f"src/{rel}", Body=content)
         create_bag(
+            client,
             client,
             "src-bucket",
             "src/",
@@ -399,18 +405,18 @@ class TestIssueCommand:
 class TestConfigCommandDispatch:
     """Smoke check that `s3-bagit config` reaches `run_config` without needing S3 creds."""
 
-    def test_config_does_not_call_load_client(self, monkeypatch, capsys):
+    def test_config_does_not_call_client_for(self, monkeypatch, capsys):
         called = {"run_config": False}
 
-        def fake_run_config():
+        def fake_run_config(profile: str = "default") -> int:
             called["run_config"] = True
             return 0
 
-        # `load_client` must NOT be called for `config` — operators run this
+        # `client_for` must NOT be called for `config` — operators run this
         # *before* they have credentials.
         monkeypatch.setattr(
-            "s3_bagit.cli.load_client",
-            lambda *a, **kw: pytest.fail("load_client should not be called for `config`"),
+            "s3_bagit.cli.client_for",
+            lambda *a, **kw: pytest.fail("client_for should not be called for `config`"),
         )
         # `cli.py` does `from s3_bagit.config_cmd import run_config`, so the
         # binding to patch lives in the cli module's namespace.

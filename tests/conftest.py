@@ -12,6 +12,23 @@ from pathlib import Path
 import boto3
 import pytest
 from moto import mock_aws
+from moto.server import ThreadedMotoServer
+
+from s3_archive.s3_client import _reset_client_cache
+
+
+@pytest.fixture(autouse=True)
+def _clear_client_cache():
+    """Drop any cached boto3 clients between tests.
+
+    `s3_archive.s3_client` keeps a module-level dict of profile → client
+    for the lifetime of the process. Without this fixture a client
+    built against one test's moto context would leak into the next,
+    pointing at a torn-down endpoint and producing baffling failures.
+    """
+    _reset_client_cache()
+    yield
+    _reset_client_cache()
 
 
 @pytest.fixture
@@ -31,6 +48,76 @@ def s3_client(aws_creds):
         client.create_bucket(Bucket="src-bucket")
         client.create_bucket(Bucket="dest-bucket")
         yield client
+
+
+@pytest.fixture
+def cross_env_real_endpoints(tmp_path, monkeypatch):
+    """Two real moto-server endpoints + two `~/.s3cfg-*` files.
+
+    Mirrors s3-archive's fixture of the same name. Exercises the real
+    two-client path end-to-end: each profile resolves to a distinct
+    boto3 client pointed at a different `ThreadedMotoServer` instance.
+    Use sparingly — the end-to-end acceptance test in
+    ``tests/test_cross_endpoint.py`` is the primary consumer.
+
+    Yields a dict::
+
+        {
+            "src": {"profile": "src-env", "client": <boto3>, "bucket": "src-bucket"},
+            "dst": {"profile": "dst-env", "client": <boto3>, "bucket": "dst-bucket"},
+        }
+    """
+    src_server = ThreadedMotoServer(ip_address="127.0.0.1", port=0)
+    dst_server = ThreadedMotoServer(ip_address="127.0.0.1", port=0)
+    src_server.start()
+    dst_server.start()
+    try:
+        src_port = src_server._server.socket.getsockname()[1]
+        dst_port = dst_server._server.socket.getsockname()[1]
+        src_endpoint = f"http://127.0.0.1:{src_port}"
+        dst_endpoint = f"http://127.0.0.1:{dst_port}"
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("S3CMD_CONFIG", raising=False)
+
+        src_client = boto3.client(
+            "s3",
+            endpoint_url=src_endpoint,
+            aws_access_key_id="testing",
+            aws_secret_access_key="testing",
+            region_name="us-east-1",
+        )
+        dst_client = boto3.client(
+            "s3",
+            endpoint_url=dst_endpoint,
+            aws_access_key_id="testing",
+            aws_secret_access_key="testing",
+            region_name="us-east-1",
+        )
+
+        # Distinct bucket names per side so cross-talk fails with NoSuchBucket.
+        src_client.create_bucket(Bucket="src-bucket")
+        dst_client.create_bucket(Bucket="dst-bucket")
+
+        _reset_client_cache()
+        clients_by_profile = {"src-env": src_client, "dst-env": dst_client}
+
+        def _client_for(profile):
+            key = profile if profile is not None else "default"
+            if key not in clients_by_profile:
+                raise KeyError(f"unexpected profile {key!r} in test")
+            return clients_by_profile[key]
+
+        monkeypatch.setattr("s3_archive.s3_client.client_for", _client_for)
+        monkeypatch.setattr("s3_bagit.cli.client_for", _client_for)
+
+        yield {
+            "src": {"profile": "src-env", "client": src_client, "bucket": "src-bucket"},
+            "dst": {"profile": "dst-env", "client": dst_client, "bucket": "dst-bucket"},
+        }
+    finally:
+        src_server.stop()
+        dst_server.stop()
 
 
 # ---------------------------------------------------------------------------

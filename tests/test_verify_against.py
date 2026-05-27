@@ -26,6 +26,7 @@ def _make_bag_from_payload(client, src_prefix: str, payload: dict[str, bytes]) -
     archive_key = "bags/my-bag.tar.gz"
     create_bag(
         client,
+        client,
         "src-bucket",
         src_prefix,
         "dest-bucket",
@@ -43,6 +44,7 @@ class TestRoundTrip:
         archive_key = _make_bag_from_payload(s3_client, "src/", payload)
 
         result = verify_against(
+            s3_client,
             s3_client,
             "dest-bucket",
             archive_key,
@@ -67,6 +69,7 @@ class TestRoundTrip:
 
         result = verify_against(
             s3_client,
+            s3_client,
             "dest-bucket",
             archive_key,
             "tar.gz",
@@ -85,6 +88,7 @@ class TestMismatch:
         s3_client.put_object(Bucket="src-bucket", Key="src/a.txt", Body=b"corrupted\n")
 
         result = verify_against(
+            s3_client,
             s3_client,
             "dest-bucket",
             archive_key,
@@ -107,6 +111,7 @@ class TestMismatch:
 
         result = verify_against(
             s3_client,
+            s3_client,
             "dest-bucket",
             archive_key,
             "tar.gz",
@@ -126,6 +131,7 @@ class TestMismatch:
         s3_client.put_object(Bucket="src-bucket", Key="src/extra.txt", Body=b"surprise")
 
         result = verify_against(
+            s3_client,
             s3_client,
             "dest-bucket",
             archive_key,
@@ -148,6 +154,7 @@ class TestDataPrefixHeuristic:
 
         result = verify_against(
             s3_client,
+            s3_client,
             "dest-bucket",
             archive_key,
             "tar.gz",
@@ -162,6 +169,7 @@ class TestDataPrefixHeuristic:
         archive_key = _make_bag_from_payload(s3_client, "src/", {"a.txt": b"alpha\n"})
 
         result = verify_against(
+            s3_client,
             s3_client,
             "dest-bucket",
             archive_key,
@@ -182,6 +190,7 @@ class TestArchiveErrors:
 
         result = verify_against(
             s3_client,
+            s3_client,
             "src-bucket",
             "in/junk.tar.gz",
             "tar.gz",
@@ -197,6 +206,7 @@ class TestArchiveErrors:
         archive_key = _make_bag_from_payload(s3_client, "src/", {"a.txt": b"alpha\n"})
         # `src-bucket` exists; `empty/` has no files.
         result = verify_against(
+            s3_client,
             s3_client,
             "dest-bucket",
             archive_key,
@@ -222,6 +232,7 @@ class TestMultiAlgorithmBag:
 
         result = verify_against(
             s3_client,
+            s3_client,
             "dest-bucket",
             "bag.tar.gz",
             "tar.gz",
@@ -243,6 +254,7 @@ class TestZipBag:
         _put_target_files(s3_client, "src-bucket", "flat/", payload)
 
         result = verify_against(
+            s3_client,
             s3_client,
             "dest-bucket",
             "bag.zip",
@@ -267,6 +279,7 @@ class TestSevenZBag:
 
         result = verify_against(
             s3_client,
+            s3_client,
             "dest-bucket",
             "bag.7z",
             "7z",
@@ -288,6 +301,7 @@ class TestCorruptedArchive:
         _put_archive(s3_client, "src-bucket", "bag.tar.gz", archive[:64])
 
         result = verify_against(
+            s3_client,
             s3_client,
             "src-bucket",
             "bag.tar.gz",
@@ -320,6 +334,7 @@ class TestPayloadOxum:
         _put_target_files(s3_client, "src-bucket", "flat/", payload)
 
         result = verify_against(
+            s3_client,
             s3_client,
             "dest-bucket",
             "bag.tar.gz",

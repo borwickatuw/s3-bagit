@@ -231,7 +231,7 @@ def verify_bag(client, bucket: str, bag_prefix: str) -> BagVerifyResult:
     """Verify the BagIt bag rooted at ``s3://bucket/bag_prefix``.
 
     ``bag_prefix`` MUST end with ``/`` (the caller normalizes via
-    :func:`s3_bagit.s3_url.parse_s3_prefix`).
+    :func:`s3_archive.url.parse_s3_prefix`).
     """
     bag_url = f"s3://{bucket}/{bag_prefix}"
     result = BagVerifyResult(bag_url=bag_url)
