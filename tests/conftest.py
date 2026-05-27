@@ -2,8 +2,12 @@
 
 import hashlib
 import io
+import shutil
+import subprocess
 import tarfile
+import tempfile
 import zipfile
+from pathlib import Path
 
 import boto3
 import pytest
@@ -126,6 +130,58 @@ def build_zip(files: dict[str, bytes], *, wrap_prefix: str = "") -> bytes:
             member_name = f"{wrap_prefix}/{name}" if wrap_prefix else name
             zf.writestr(member_name, content)
     return buf.getvalue()
+
+
+# 7z archive flavors exercising different code paths in py7zr / SeekableS3Object.
+# Mirrors s3-archive's tests/conftest.py:SEVEN_Z_FLAVORS so behavior is identical
+# across the two test suites.
+SEVEN_Z_FLAVORS: dict[str, list[str]] = {
+    "solid": [],
+    "nonsolid": ["-ms=off"],
+    "plain_header": ["-mhc=off"],
+    "solid_bcj": ["-m0=BCJ", "-m1=LZMA2"],
+}
+
+
+def build_7z(
+    files: dict[str, bytes],
+    *,
+    flavor: str = "solid",
+    wrap_prefix: str = "",
+) -> bytes:
+    """Serialize *files* as a .7z archive by shelling out to the ``7z`` CLI.
+
+    The 7z format can't be serialized in memory the way tar and zip can
+    (the StartHeader at the front references a header at the end), so
+    this helper writes the members to a temp dir, invokes ``7z a``, and
+    returns the resulting archive bytes. Tests that call it are skipped
+    if the ``7z`` CLI is not on ``PATH``.
+
+    See s3-archive's tests/conftest.py for the flavor-by-flavor rationale.
+    """
+    if shutil.which("7z") is None:
+        pytest.skip("7z CLI not installed; skipping .7z fixture")
+    if flavor not in SEVEN_Z_FLAVORS:
+        raise ValueError(f"Unknown 7z flavor {flavor!r}; expected one of {sorted(SEVEN_Z_FLAVORS)}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpdir = Path(tmp)
+        src = tmpdir / "src"
+        src.mkdir()
+        member_names: list[str] = []
+        for name, content in files.items():
+            member_name = f"{wrap_prefix}/{name}" if wrap_prefix else name
+            target = src / member_name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+            member_names.append(member_name)
+
+        archive = tmpdir / "out.7z"
+        cmd = ["7z", "a", *SEVEN_Z_FLAVORS[flavor], str(archive), *member_names]
+        # cmd is built from constants and dict keys controlled by the test;
+        # not user input.
+        subprocess.run(cmd, check=True, capture_output=True, cwd=src)  # noqa: S603
+        return archive.read_bytes()
 
 
 def upload_bag_to_prefix(client, bucket: str, prefix: str, files: dict[str, bytes]) -> None:

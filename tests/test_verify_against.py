@@ -5,7 +5,7 @@ import pytest
 from s3_bagit.create_bag import create_bag
 from s3_bagit.verify_against import _is_tag_file_name, verify_against
 
-from .conftest import build_tar_gz, build_zip, make_bag_files
+from .conftest import SEVEN_Z_FLAVORS, build_7z, build_tar_gz, build_zip, make_bag_files
 
 
 def _put_target_files(client, bucket: str, prefix: str, files: dict[str, bytes]) -> None:
@@ -253,6 +253,52 @@ class TestZipBag:
             target_url="s3://src-bucket/flat/",
         )
         assert result.ok, result.errors
+
+
+class TestSevenZBag:
+    @pytest.mark.parametrize("flavor", sorted(SEVEN_Z_FLAVORS))
+    def test_seven_z_archive(self, s3_client, flavor):
+        """verify-against should treat .7z bags the same as tar.gz / zip."""
+        payload = {"a.txt": b"alpha\n", "sub/b.txt": b"beta\n"}
+        files = make_bag_files(payload)
+        archive = build_7z(files, flavor=flavor, wrap_prefix="my-bag")
+        _put_archive(s3_client, "dest-bucket", "bag.7z", archive)
+        _put_target_files(s3_client, "src-bucket", "flat/", payload)
+
+        result = verify_against(
+            s3_client,
+            "dest-bucket",
+            "bag.7z",
+            "7z",
+            "src-bucket",
+            "flat/",
+            archive_url="s3://dest-bucket/bag.7z",
+            target_url="s3://src-bucket/flat/",
+        )
+        assert result.ok, result.errors
+
+
+class TestCorruptedArchive:
+    def test_corrupted_archive_surfaces_as_result_fail(self, s3_client):
+        """A truncated archive should produce ``Could not read archive: ...``,
+        not propagate the underlying decoder exception."""
+        # Truncate a valid tar.gz so the gzip stream is incomplete.
+        files = make_bag_files({"a.txt": b"alpha\n"})
+        archive = build_tar_gz(files, wrap_prefix="my-bag")
+        _put_archive(s3_client, "src-bucket", "bag.tar.gz", archive[:64])
+
+        result = verify_against(
+            s3_client,
+            "src-bucket",
+            "bag.tar.gz",
+            "tar.gz",
+            "src-bucket",
+            "flat/",
+            archive_url="s3://src-bucket/bag.tar.gz",
+            target_url="s3://src-bucket/flat/",
+        )
+        assert not result.ok
+        assert any("Could not read archive" in e for e in result.errors), result.errors
 
 
 class TestPayloadOxum:

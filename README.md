@@ -207,11 +207,13 @@ browser, the URL is also printed for copy-paste.
 | `.tar.gz`, `.tgz`       | gzip                                 |
 | `.tar.bz2`, `.tbz2`     | bzip2                                |
 | `.tar.xz`, `.txz`       | xz / lzma                            |
+| `.tar.zst`              | zstandard                            |
 | `.zip`                  | streaming via `stream-unzip`         |
+| `.7z`                   | py7zr + seekable-S3 (extract/ls only — BagIt-non-standard, see [`docs/BAGIT-SPEC.md`](docs/BAGIT-SPEC.md)) |
 
-`.7z` is **not** supported (see [`docs/BAGIT-SPEC.md`](docs/BAGIT-SPEC.md)
-for why). Convert to `.tar.gz` outside s3-bagit if you need to ingest a
-`.7z` bag.
+`create-bag` only emits `.tar.gz`. `.7z` create is intentionally
+unsupported (the SignatureHeader at byte 0 references metadata at
+the tail, which is incompatible with streaming multipart uploads).
 
 ## Troubleshooting
 

@@ -28,10 +28,7 @@ Tagmanifests are out of scope here: the target prefix is intentionally
 files in the first place.
 """
 
-import tarfile
-import zipfile
-
-from s3_archive.exceptions import UnsupportedArchiveFormatError
+from s3_archive.exceptions import ArchiveReadError, UnsupportedArchiveFormatError
 from s3_archive.hashing import stream_hash_object
 from s3_archive.members import iter_archive_members
 
@@ -168,7 +165,7 @@ def verify_against(
 
     try:
         captured = _read_tag_files(client, archive_bucket, archive_key, archive_fmt)
-    except (tarfile.TarError, zipfile.BadZipFile) as exc:
+    except ArchiveReadError as exc:
         result.fail(f"Could not read archive: {exc}")
         return result
 

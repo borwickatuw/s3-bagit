@@ -19,8 +19,8 @@ RFC 8493 §4.1.2 names **TAR**, **ZIP**, and **TGZ**:
 > Common serialization formats include TAR, ZIP, and TAR with GZIP
 > compression (TGZ).
 
-s3-bagit handles all of those plus the two other common tar-with-compression
-variants:
+s3-bagit handles all of those plus several tar-with-compression
+variants and (BagIt-non-standard) `.7z`:
 
 | Extension(s)            | Notes                                                |
 | ----------------------- | ---------------------------------------------------- |
@@ -28,35 +28,33 @@ variants:
 | `.tar.gz`, `.tgz`       | gzip — the format named in RFC 8493 §4.1.2 as "TGZ"  |
 | `.tar.bz2`, `.tbz2`     | bzip2                                                |
 | `.tar.xz`, `.txz`       | xz / lzma                                            |
+| `.tar.zst`              | zstandard                                            |
 | `.zip`                  | streaming via `stream-unzip`                         |
+| `.7z`                   | seekable-S3 + py7zr; see note below                  |
 
-All five share the same streaming dispatch in
-`src/s3_bagit/extract.py` — `tarfile.open(fileobj=..., mode=m)` handles
-each tar variant in a single non-seeking pass; zip is streamed by
-`stream-unzip`.
+All formats share the same streaming dispatch in
+[`s3_archive.members.iter_archive_members`](https://github.com/borwickatuw/s3-archive) —
+tar variants via `tarfile.open(fileobj=..., mode=m)`, zip via
+`stream-unzip`, 7z via py7zr driven by a seekable-S3 adapter (range
+GETs + tail prefetch, no local disk).
 
-### Why not 7z?
+### A note on `.7z`
 
-The Preservation team sometimes uses `.7z` for compression-ratio
-reasons. **s3-bagit does not support it** for v1, and the CLI
-raises a specific error pointing here.
+`.7z` is **not** a BagIt-standard serialization. RFC 8493 §4.1.2's
+list of TAR / ZIP / TGZ is informative, not normative, so a `.7z` bag
+is not RFC-non-conformant — but a downstream tool that only knows the
+three named formats will not accept it. Use `.7z` knowingly.
 
-Two reasons:
+The implementation reaches into the underlying s3-archive library,
+which handles the "7z's index lives at the tail" problem with a
+seekable-S3 adapter (ranged GETs + a one-time tail prefetch); the
+"no local disk" promise still holds. See
+[`s3-archive/docs/ARCHITECTURE.md`](https://github.com/borwickatuw/s3-archive/blob/main/docs/ARCHITECTURE.md)
+§ ".7z — the exception that proves the rule" for the design.
 
-1. **It's not a BagIt-standard format.** RFC 8493 §4.1.2's list is
-   informative, not normative, but the working group's deliberate
-   choice was the trio of widely-deployed formats.
-2. **7z is not stream-friendly.** Like ZIP, 7z stores its index at the
-   end of the file — but unlike streaming-ZIP tooling, no mature
-   Python library can stream-extract 7z without a seekable input.
-   Supporting it would require either downloading the whole archive
-   to local disk (against the project's "no local disk" promise) or
-   implementing seekable-S3-reads via range requests under py7zr.
-
-If Preservation needs 7z, an option is to do a `.7z` → `.tar.gz`
-conversion step outside s3-bagit on a workstation with disk space,
-then run `s3-bagit extract` on the tar.gz. Or open an issue to
-revisit the range-read approach.
+`create-bag` does not emit `.7z` — the SignatureHeader at byte 0
+references metadata at the tail, which is incompatible with streaming
+multipart uploads. Bag creation stays `.tar.gz`-only.
 
 ## Manifest algorithms
 

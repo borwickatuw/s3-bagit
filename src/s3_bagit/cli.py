@@ -3,9 +3,9 @@
 Subcommands:
 
   * ``extract`` — stream a BagIt archive (tar / tar.gz / tar.bz2 /
-    tar.xz / zip) out of S3 and upload each member to a destination S3
-    prefix. By default also runs ``verify`` against the destination
-    prefix; pass ``--no-verify`` to skip.
+    tar.xz / tar.zst / zip / 7z) out of S3 and upload each member to a
+    destination S3 prefix. By default also runs ``verify`` against the
+    destination prefix; pass ``--no-verify`` to skip.
 
   * ``verify`` — verify an already-extracted bag at an S3 prefix.
 
@@ -39,7 +39,7 @@ from s3_archive.exceptions import ConfigError as _S3ArchiveConfigError
 from s3_archive.exceptions import UnsupportedArchiveFormatError
 from s3_archive.extract import extract
 from s3_archive.ls import list_archive
-from s3_archive.url import detect_format, parse_s3_prefix, parse_s3_url
+from s3_archive.url import detect_format, looks_like_archive_url, parse_s3_prefix, parse_s3_url
 
 from s3_bagit import REPO_URL, __version__
 from s3_bagit.config_cmd import run_config
@@ -85,7 +85,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_extract = sub.add_parser(
         "extract",
         help=(
-            "Extract a BagIt archive (tar/tar.gz/tar.bz2/tar.xz/zip) in S3 to a destination prefix."
+            "Extract a BagIt archive (tar/tar.gz/tar.bz2/tar.xz/tar.zst/zip/7z) "
+            "in S3 to a destination prefix."
         ),
     )
     p_extract.add_argument(
@@ -123,8 +124,8 @@ def _build_parser() -> argparse.ArgumentParser:
             "inside a serialized bag, without extracting the bag."
         ),
         description=(
-            "Stream a serialized bag (tar/tar.gz/tar.bz2/tar.xz/zip) once "
-            "to read its manifest(s), then stream-hash each file under "
+            "Stream a serialized bag (tar/tar.gz/tar.bz2/tar.xz/tar.zst/zip/7z) "
+            "once to read its manifest(s), then stream-hash each file under "
             "the target prefix and compare. The target is treated as "
             "flat — manifest entries 'data/<rel>' map to "
             "'<target_prefix>/<rel>'. To check an already-extracted bag "
@@ -281,19 +282,6 @@ def _cmd_extract(args: argparse.Namespace, client) -> int:
     return _EXIT_OK if result.ok else _EXIT_VERIFY_FAILED
 
 
-_ARCHIVE_SUFFIXES = (
-    ".tar",
-    ".tar.gz",
-    ".tgz",
-    ".tar.bz2",
-    ".tbz2",
-    ".tar.xz",
-    ".txz",
-    ".zip",
-    ".7z",
-)
-
-
 def _guard_against_archive_url(bag_url: str) -> None:
     """Reject `verify <archive>` with a message pointing at `extract` instead.
 
@@ -302,8 +290,11 @@ def _guard_against_archive_url(bag_url: str) -> None:
     this guard the symptom is ``No objects found`` followed by
     ``RESULT: INVALID``, which implies we checked a bag and it failed —
     misleading. Fail fast with a clear ConfigError instead.
+
+    The extension list is sourced from s3-archive's ``looks_like_archive_url``
+    so this guard stays in lockstep with the formats s3-archive can read.
     """
-    if bag_url.lower().rstrip("/").endswith(_ARCHIVE_SUFFIXES):
+    if looks_like_archive_url(bag_url):
         raise ConfigError(
             f"{bag_url} looks like an archive file, not an extracted-bag prefix.\n"
             f"`verify` operates on an already-extracted bag whose files live "

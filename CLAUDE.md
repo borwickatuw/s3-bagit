@@ -5,12 +5,13 @@
 Narrow CLI for BagIt (RFC 8493) workflows against any S3-compatible
 object storage:
 
-- `extract` — serialized bag (tar.gz / zip) in S3 → extracted bag at
-  an S3 prefix.
+- `extract` — serialized bag (tar / tar.gz / tar.bz2 / tar.xz /
+  tar.zst / zip / 7z) in S3 → extracted bag at an S3 prefix.
 - `verify` — check an already-extracted bag at an S3 prefix.
 - `verify-against` — check the files at an S3 prefix against the
   manifests inside a serialized bag (without extracting the bag).
 - `create-bag` — S3 prefix → serialized BagIt `.tar.gz` at an S3 key.
+  (Only `.tar.gz` is emitted; `.7z` create is not supported.)
 
 Everything streams — nothing is ever staged on local disk.
 
@@ -51,20 +52,23 @@ guides in `claude-meta/best-practices/`. Project-specific:
 ```
 src/s3_bagit/
     cli.py            argparse entry point (extract, verify, verify-against, create-bag, ls, config, issue)
-    extract.py        streaming tar.gz + zip extract to S3
     verify.py         RFC 8493 manifest / tagmanifest / Payload-Oxum checks
     verify_against.py stream serialized bag once, hash target prefix once-per-file (multi-hasher)
     create_bag.py     streaming S3-prefix → BagIt .tar.gz (single-pass, tag files trailing)
-    ls.py             stream-list an archive's members
+    config_cmd.py     interactive `s3-bagit config` for ~/.s3cfg
+    issue.py          open a pre-filled GitHub new-issue URL
     s3_client.py      boto3 client builder (s3cmd config or AWS chain)
-    s3_url.py         parse_s3_url, parse_s3_prefix, detect_format
     exceptions.py     ConfigError, BagError
     log_config.py     tqdm-aware console logger
 tests/                pytest + moto (no live S3 required)
 docs/
-    BAGIT-SPEC.md     conformance notes
+    BAGIT-SPEC.md     conformance notes (including the .7z BagIt-non-standard note)
     ARCHITECTURE.md   streaming model and S3-to-S3 design
 ```
+
+Note: `extract`, `ls`, archive-member iteration, S3 URL parsing, and
+format detection all live in [`s3-archive`](https://github.com/borwickatuw/s3-archive)
+— s3-bagit imports them rather than reimplementing.
 
 ## Commands
 

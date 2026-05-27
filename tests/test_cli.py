@@ -7,7 +7,7 @@ import pytest
 from s3_bagit.cli import main
 from s3_bagit.create_bag import create_bag
 
-from .conftest import build_tar_gz, build_zip, make_bag_files, upload_bag_to_prefix
+from .conftest import build_7z, build_tar_gz, build_zip, make_bag_files, upload_bag_to_prefix
 
 
 @pytest.fixture
@@ -66,6 +66,22 @@ class TestExtractThenVerify:
         captured = capsys.readouterr()
         assert "RESULT: INVALID" in captured.out
 
+    def test_extract_with_default_verify_passes_for_7z_bag(self, patched_client, capsys):
+        files = make_bag_files({"a.txt": b"alpha\n", "b.txt": b"beta\n"})
+        _put_archive(patched_client, "src-bucket", "in/bag.7z", build_7z(files))
+
+        rc = main(
+            [
+                "extract",
+                "s3://src-bucket/in/bag.7z",
+                "s3://dest-bucket/out/",
+            ]
+        )
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "RESULT: VALID" in captured.out
+
 
 class TestVerifyCommand:
     def test_verify_valid_bag(self, patched_client, capsys):
@@ -115,8 +131,12 @@ class TestVerifyGuard:
     @pytest.mark.parametrize(
         "url",
         [
+            "s3://bucket/bags/foo.tar",
             "s3://bucket/bags/foo.tar.gz",
             "s3://bucket/bags/foo.tgz",
+            "s3://bucket/bags/foo.tar.bz2",
+            "s3://bucket/bags/foo.tar.xz",
+            "s3://bucket/bags/foo.tar.zst",
             "s3://bucket/bags/foo.zip",
             "s3://bucket/bags/foo.7z",
             "s3://bucket/bags/FOO.TAR.GZ",
@@ -325,6 +345,17 @@ class TestLsCommand:
         _put_archive(patched_client, "src-bucket", "in/bag.zip", build_zip(files))
 
         rc = main(["ls", "s3://src-bucket/in/bag.zip"])
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "data/a.txt" in out
+        assert " files, " in out
+
+    def test_ls_7z_prints_members(self, patched_client, capsys):
+        files = make_bag_files({"a.txt": b"alpha\n"})
+        _put_archive(patched_client, "src-bucket", "in/bag.7z", build_7z(files))
+
+        rc = main(["ls", "s3://src-bucket/in/bag.7z"])
 
         out = capsys.readouterr().out
         assert rc == 0

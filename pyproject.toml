@@ -12,7 +12,7 @@ dependencies = [
     "boto3>=1.35",
     "python-dotenv>=1.0",
     "questionary>=2.0",
-    "s3-archive",
+    "s3-archive>=1.0.0",
     "stream-unzip>=0.0.71",
     "tqdm>=4.67",
 ]
@@ -21,7 +21,7 @@ dependencies = [
 s3-bagit = "s3_bagit.cli:main"
 
 [tool.uv.sources]
-s3-archive = { git = "https://github.com/borwickatuw/s3-archive", tag = "v0.2.0" }
+s3-archive = { git = "https://github.com/borwickatuw/s3-archive", tag = "v1.0.0" }
 
 [dependency-groups]
 dev = [
