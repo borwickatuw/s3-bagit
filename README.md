@@ -6,7 +6,7 @@ Works against AWS S3, UW Libraries' Kopah, MinIO, DigitalOcean Spaces,
 Backblaze B2, Wasabi — anything that speaks S3.
 
 ```
-s3-bagit config                                          # interactive credentials setup
+s3-bagit config [--profile NAME]                         # interactive credentials setup
 s3-bagit extract        <archive_url> <dest_url>         # serialized bag in S3 → extracted bag in S3
 s3-bagit create-bag     <src_url>     <dest_archive_url> # S3 prefix → BagIt .tar.gz in S3
 s3-bagit verify         <bag_url>                        # check an already-extracted bag at an S3 prefix
@@ -14,6 +14,10 @@ s3-bagit verify-against <archive_url> <target_url>       # check files at a pref
 s3-bagit ls             <archive_url>                    # peek inside an archive without extracting
 s3-bagit issue          ["short summary"]                # open a pre-filled GitHub issue
 ```
+
+URLs accept an optional `profile:` prefix
+(`profile_name:s3://bucket/key`) for multi-provider workflows — see
+[Multiple S3 providers](#multiple-s3-providers) below.
 
 > Bookmark `https://github.com/borwickatuw/s3-bagit#readme` — this
 > README is the canonical user guide.
@@ -90,6 +94,31 @@ s3-bagit config
 Run this once on each workstation, then any time the endpoint or keys
 change. If `~/.s3cfg` already exists, the prompt offers to keep it
 unchanged instead of redoing everything.
+
+### Multiple S3 providers
+
+s3-bagit accepts the same `--profile NAME` flag and `profile:s3://...`
+URL prefix that `s3-archive` does. Two URLs in the same command can
+target different providers — that's the canonical UW Libraries
+Preservation flow (bags in AWS, extracted trees in Kopah):
+
+```
+s3-bagit config --profile aws-prsv    # writes ~/.s3cfg-aws-prsv
+s3-bagit config --profile kopah       # writes ~/.s3cfg-kopah
+
+s3-bagit verify-against \
+    aws-prsv:s3://bags/my-bag.tar.gz \
+    kopah:s3://extracted/my-bag/
+```
+
+`s3-bagit config --profile NAME` writes the same `~/.s3cfg-<name>`
+file that `s3-archive config --profile NAME` does, so a profile set
+up once is visible to both tools.
+
+For the full setup walkthrough — profile naming rules, where the
+files land, how the resolver picks them up — see
+[s3-archive's "Multiple S3 providers"
+section](https://github.com/borwickatuw/s3-archive#multiple-s3-providers).
 
 ### Extract a bag
 
@@ -263,7 +292,12 @@ For example, `s3-bagit extract --help` shows the exact form of
 
 ### Credential resolution order
 
-s3-bagit looks for S3 credentials in this order:
+The order below applies to the **default profile** (bare `s3://...`
+URLs). Named profiles (`--profile NAME`, or `name:s3://...` URLs) read
+**only** `~/.s3cfg-<name>` and don't consult any other source — see
+[Multiple S3 providers](#multiple-s3-providers) above.
+
+For the default profile, s3-bagit looks for S3 credentials in this order:
 
 1. `$S3CMD_CONFIG` — explicit path to an s3cmd INI file. Reads
    `access_key`, `secret_key`, and `host_base` (the endpoint).
