@@ -33,6 +33,7 @@ import logging
 import sys
 from pathlib import Path
 
+from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 
 from s3_archive.config_cmd import validate_profile_name as _validate_profile_name
@@ -45,7 +46,7 @@ from s3_archive.url import detect_format, looks_like_archive_url, parse_s3_prefi
 from s3_bagit import REPO_URL, __version__
 from s3_bagit.config_cmd import run_config
 from s3_bagit.create_bag import create_bag
-from s3_bagit.exceptions import BagError, ConfigError
+from s3_bagit.exceptions import BagError, ConfigError, S3OperationError
 from s3_bagit.issue import open_issue
 from s3_bagit.log_config import get_logger, setup_console
 from s3_bagit.verify import BagVerifyResult, verify_bag
@@ -57,6 +58,7 @@ log = get_logger(__name__)
 _EXIT_OK = 0
 _EXIT_VERIFY_FAILED = 1
 _EXIT_CONFIG_ERROR = 2
+_EXIT_S3_ERROR = 4
 # 128 + SIGINT(2) — the conventional POSIX exit code for "killed by Ctrl-C".
 _EXIT_INTERRUPTED = 130
 
@@ -281,6 +283,50 @@ def _print_verify_report(result: BagVerifyResult) -> None:
         print("RESULT: VALID")
 
 
+def _wrap_client_error(
+    exc: ClientError,
+    *,
+    archive_url: str,
+    dest_url: str,
+    operation_hint: str,
+) -> S3OperationError:
+    """Translate a botocore ``ClientError`` into an operator-facing message.
+
+    Carries operation name, HTTP status, both URLs, and — when the server
+    returned ``Content-Type: text/html`` — a hint that the failure was at
+    an upstream proxy rather than S3 itself. The HTML hint exists because
+    Apache-fronted RGW deployments can return a stock Apache 500 page for
+    permission/proxy misconfigurations, which botocore can't parse as S3
+    XML and surfaces as an opaque "An error occurred (500)".
+    """
+    resp = exc.response or {}
+    err = resp.get("Error", {}) or {}
+    meta = resp.get("ResponseMetadata", {}) or {}
+    status = meta.get("HTTPStatusCode", "?")
+    code = err.get("Code", "?")
+    message = err.get("Message") or str(exc)
+    headers = meta.get("HTTPHeaders", {}) or {}
+    content_type = (headers.get("content-type") or "").lower()
+    op_name = getattr(exc, "operation_name", None) or "?"
+
+    lines = [
+        f"S3 {op_name} failed during {operation_hint}.",
+        f"  Source:      {archive_url}",
+        f"  Destination: {dest_url}",
+        f"  HTTP {status} ({code}): {message}",
+    ]
+    if "text/html" in content_type:
+        lines.append(
+            "  The server returned HTML, not S3 XML — this usually means "
+            "an upstream proxy (e.g. Apache in front of Ceph RGW) rejected "
+            "the request before it reached S3. Likely causes: missing write "
+            "permission for this prefix, or a server-side proxy/ACL "
+            "misconfiguration. Re-run with -v to see the response body, "
+            "and contact your S3 administrator."
+        )
+    return S3OperationError("\n".join(lines))
+
+
 def _cmd_extract(args: argparse.Namespace) -> int:
     src = parse_s3_url(args.archive_url)
     if not src.key:
@@ -293,17 +339,25 @@ def _cmd_extract(args: argparse.Namespace) -> int:
     src_client = client_for(src.profile)
     dst_client = client_for(dst.profile)
 
-    extract(
-        src_client,
-        dst_client,
-        src.bucket,
-        src.key,
-        dst.bucket,
-        dst.key,
-        fmt,
-        dry_run=args.dry_run,
-        verbose=args.verbose,
-    )
+    try:
+        extract(
+            src_client,
+            dst_client,
+            src.bucket,
+            src.key,
+            dst.bucket,
+            dst.key,
+            fmt,
+            dry_run=args.dry_run,
+            verbose=args.verbose,
+        )
+    except ClientError as exc:
+        raise _wrap_client_error(
+            exc,
+            archive_url=args.archive_url,
+            dest_url=args.dest_url,
+            operation_hint="extract",
+        ) from exc
 
     if args.dry_run or args.no_verify:
         return _EXIT_OK
@@ -498,6 +552,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Bag error: {exc}", file=sys.stderr)
         print(_ISSUE_HINT, file=sys.stderr)
         return _EXIT_VERIFY_FAILED
+    except S3OperationError as exc:
+        print(str(exc), file=sys.stderr)
+        print(_ISSUE_HINT, file=sys.stderr)
+        return _EXIT_S3_ERROR
 
     # Unreachable; argparse already enforced a subcommand.
     parser.error("no subcommand")

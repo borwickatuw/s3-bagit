@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import pytest
+from botocore.exceptions import ClientError
 
 from s3_bagit.cli import main
 from s3_bagit.create_bag import create_bag
@@ -86,6 +87,79 @@ class TestExtractThenVerify:
         assert rc == 0
         captured = capsys.readouterr()
         assert "RESULT: VALID" in captured.out
+
+
+class TestExtractClientErrorWrap:
+    """The CLI wraps mid-stream botocore ClientErrors with operator context."""
+
+    def _make_client_error(self, *, status: int, content_type: str, body: str) -> ClientError:
+        # Mirror what botocore would build when the server returns ``status``
+        # with the given body. The Error dict here is what botocore would
+        # produce when XML parsing fails on an HTML body (Code = HTTP status
+        # as string, Message = generic text).
+        return ClientError(
+            {
+                "Error": {"Code": str(status), "Message": "Internal Server Error"},
+                "ResponseMetadata": {
+                    "HTTPStatusCode": status,
+                    "HTTPHeaders": {"content-type": content_type},
+                },
+                "Body": body,
+            },
+            "PutObject",
+        )
+
+    def test_html_500_includes_proxy_hint_and_urls(self, patched_client, capsys):
+        err = self._make_client_error(
+            status=500,
+            content_type="text/html; charset=iso-8859-1",
+            body="<html><title>500 Internal Server Error</title></html>",
+        )
+        with patch("s3_bagit.cli.extract", side_effect=err):
+            rc = main(
+                [
+                    "extract",
+                    "s3://src-bucket/in/bag.7z",
+                    "s3://dest-bucket/out/",
+                ]
+            )
+
+        assert rc == 4
+        stderr = capsys.readouterr().err
+        assert "S3 PutObject failed during extract" in stderr
+        assert "s3://src-bucket/in/bag.7z" in stderr
+        assert "s3://dest-bucket/out/" in stderr
+        assert "HTTP 500" in stderr
+        assert "HTML" in stderr  # proxy/server hint fired
+        assert "upstream proxy" in stderr
+
+    def test_xml_403_omits_proxy_hint(self, patched_client, capsys):
+        err = ClientError(
+            {
+                "Error": {"Code": "AccessDenied", "Message": "Access Denied"},
+                "ResponseMetadata": {
+                    "HTTPStatusCode": 403,
+                    "HTTPHeaders": {"content-type": "application/xml"},
+                },
+            },
+            "PutObject",
+        )
+        with patch("s3_bagit.cli.extract", side_effect=err):
+            rc = main(
+                [
+                    "extract",
+                    "s3://src-bucket/in/bag.tar.gz",
+                    "s3://dest-bucket/out/",
+                ]
+            )
+
+        assert rc == 4
+        stderr = capsys.readouterr().err
+        assert "HTTP 403 (AccessDenied): Access Denied" in stderr
+        assert "s3://src-bucket/in/bag.tar.gz" in stderr
+        assert "s3://dest-bucket/out/" in stderr
+        # No proxy hint for a proper S3 XML error.
+        assert "upstream proxy" not in stderr
 
 
 class TestVerifyCommand:
