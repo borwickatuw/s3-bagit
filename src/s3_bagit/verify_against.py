@@ -36,6 +36,7 @@ from s3_bagit.exceptions import BagError
 from s3_bagit.log_config import get_logger
 from s3_bagit.verify import (
     BagVerifyResult,
+    ProgressCallback,
     _parse_bag_info,
     _parse_manifest_text,
 )
@@ -144,6 +145,7 @@ def verify_against(
     archive_url: str,
     target_url: str,
     verbose: bool = False,
+    on_progress: ProgressCallback | None = None,
 ) -> BagVerifyResult:
     """Verify *target_prefix*'s files against the manifests inside the bag at *archive_key*.
 
@@ -251,6 +253,8 @@ def verify_against(
                     f"manifest-{algo}.txt: checksum mismatch for data/{target_rel}: "
                     f"expected {expected}, got {actual}"
                 )
+        if on_progress is not None:
+            on_progress(target_rel, target_objects[target_rel])
 
     # Files in the target but not covered by any manifest — symmetric with
     # verify's "data file present but not listed in manifest" error.

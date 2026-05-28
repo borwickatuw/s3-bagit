@@ -21,6 +21,7 @@ storage-scripts, since storage-scripts does not implement BagIt
 verification.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -30,6 +31,13 @@ from s3_bagit.exceptions import BagError
 from s3_bagit.log_config import get_logger
 
 log = get_logger(__name__)
+
+
+# Per-file progress callback: ``on_progress(rel_path, bytes_done)``.
+# Called once per file after its hash is computed. ``bytes_done`` is the
+# file's size (one event per file, suitable for tqdm.update). None means
+# no progress reporting — preserves the previous library behavior.
+ProgressCallback = Callable[[str, int], None]
 
 # Supported hash algorithms — anything ``hashlib.new()`` accepts works at
 # runtime, but we hard-list the four standard BagIt choices for clearer
@@ -190,6 +198,7 @@ def _verify_files_single_pass(
     result: BagVerifyResult,
     *,
     payload: bool,
+    on_progress: ProgressCallback | None = None,
 ) -> set[str]:
     """Hash each file once, fanning out to every algorithm that listed it.
 
@@ -224,14 +233,27 @@ def _verify_files_single_pass(
                 )
             else:
                 log.debug("%s ok (%s) %s", label, algo, rel)
+        if on_progress is not None:
+            on_progress(rel, objects[rel]["Size"])
     return covered
 
 
-def verify_bag(client, bucket: str, bag_prefix: str) -> BagVerifyResult:
+def verify_bag(
+    client,
+    bucket: str,
+    bag_prefix: str,
+    *,
+    on_progress: ProgressCallback | None = None,
+) -> BagVerifyResult:
     """Verify the BagIt bag rooted at ``s3://bucket/bag_prefix``.
 
     ``bag_prefix`` MUST end with ``/`` (the caller normalizes via
     :func:`s3_archive.url.parse_s3_prefix`).
+
+    *on_progress*, if supplied, is invoked once per verified file with
+    ``(rel_path, file_size)`` — designed to map onto a ``tqdm.update``
+    in the CLI without the library knowing about tqdm. See
+    :data:`ProgressCallback`.
     """
     bag_url = f"s3://{bucket}/{bag_prefix}"
     result = BagVerifyResult(bag_url=bag_url)
@@ -303,7 +325,15 @@ def verify_bag(client, bucket: str, bag_prefix: str) -> BagVerifyResult:
 
     # Verify all payload files in a single pass per file.
     payload_expected = _build_expected_map(manifests_by_algo)
-    _verify_files_single_pass(client, bucket, payload_expected, objects, result, payload=True)
+    _verify_files_single_pass(
+        client,
+        bucket,
+        payload_expected,
+        objects,
+        result,
+        payload=True,
+        on_progress=on_progress,
+    )
 
     # Every data/ file must be covered by every payload manifest.
     data_files = {rel for rel in objects if rel.startswith("data/")}
@@ -317,7 +347,15 @@ def verify_bag(client, bucket: str, bag_prefix: str) -> BagVerifyResult:
 
     # Verify all tag files in a single pass per file.
     tag_expected = _build_expected_map(tagmanifests_by_algo)
-    _verify_files_single_pass(client, bucket, tag_expected, objects, result, payload=False)
+    _verify_files_single_pass(
+        client,
+        bucket,
+        tag_expected,
+        objects,
+        result,
+        payload=False,
+        on_progress=on_progress,
+    )
 
     # Payload-Oxum from bag-info.txt.
     sizes = {rel: meta["Size"] for rel, meta in objects.items()}

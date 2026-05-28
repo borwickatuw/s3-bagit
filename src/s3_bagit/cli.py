@@ -35,10 +35,11 @@ from pathlib import Path
 
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 from s3_archive.config_cmd import validate_profile_name as _validate_profile_name
 from s3_archive.exceptions import UnsupportedArchiveFormatError
-from s3_archive.extract import extract
+from s3_archive.extract import ExtractEvent, extract
 from s3_archive.ls import list_archive
 from s3_archive.s3_client import client_for
 from s3_archive.url import detect_format, looks_like_archive_url, parse_s3_prefix, parse_s3_url
@@ -327,6 +328,63 @@ def _wrap_client_error(
     return S3OperationError("\n".join(lines))
 
 
+def _progress_bar(*, desc: str) -> tqdm:
+    """Construct the shared tqdm bar shape for long-running CLI operations.
+
+    Single bar, bytes, IEC scale (KiB/MiB/GiB so an operator can mentally
+    cross-check against S3 console sizes). Auto-disables when stderr
+    isn't a TTY — keeps CI logs and shell redirects clean.
+    """
+    return tqdm(
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        desc=desc,
+        miniters=1,
+        disable=not sys.stderr.isatty(),
+        leave=True,
+    )
+
+
+def _truncate_for_postfix(name: str, width: int = 40) -> str:
+    """Trim *name* to the right-most *width* chars; postfix ellipsis if cut.
+
+    Keeps the tail of the path because that's where the unique-per-file
+    information lives (the bag prefix repeats across every member).
+    """
+    if len(name) <= width:
+        return name
+    return "…" + name[-(width - 1) :]
+
+
+def _make_per_file_progress_cb(bar: tqdm):
+    """Build a ``(rel, bytes_done)`` callback that advances *bar* per file."""
+
+    def _cb(rel: str, bytes_done: int) -> None:
+        bar.set_postfix_str(f"file={_truncate_for_postfix(rel)}", refresh=False)
+        bar.update(bytes_done)
+
+    return _cb
+
+
+def _make_extract_progress_cb(bar: tqdm):
+    """Build an ``ExtractEvent`` callback that advances *bar* on each event.
+
+    Boundary events (``bytes_transferred == 0``) update the current-file
+    postfix; byte-transfer events advance the bar. tqdm.update is
+    thread-safe, which matters because boto3 dispatches the byte
+    callbacks from its transfer threadpool.
+    """
+
+    def _cb(event: ExtractEvent) -> None:
+        if event.bytes_transferred == 0:
+            bar.set_postfix_str(f"file={_truncate_for_postfix(event.member)}", refresh=False)
+        else:
+            bar.update(event.bytes_transferred)
+
+    return _cb
+
+
 def _cmd_extract(args: argparse.Namespace) -> int:
     src = parse_s3_url(args.archive_url)
     if not src.key:
@@ -340,17 +398,19 @@ def _cmd_extract(args: argparse.Namespace) -> int:
     dst_client = client_for(dst.profile)
 
     try:
-        extract(
-            src_client,
-            dst_client,
-            src.bucket,
-            src.key,
-            dst.bucket,
-            dst.key,
-            fmt,
-            dry_run=args.dry_run,
-            verbose=args.verbose,
-        )
+        with _progress_bar(desc="Extracting") as bar:
+            extract(
+                src_client,
+                dst_client,
+                src.bucket,
+                src.key,
+                dst.bucket,
+                dst.key,
+                fmt,
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+                on_progress=_make_extract_progress_cb(bar),
+            )
     except ClientError as exc:
         raise _wrap_client_error(
             exc,
@@ -364,7 +424,10 @@ def _cmd_extract(args: argparse.Namespace) -> int:
 
     log.info("Verifying extracted bag…")
     # Verify reads from where the bag now lives — that's the destination.
-    result = verify_bag(dst_client, dst.bucket, dst.key)
+    with _progress_bar(desc="Verifying") as bar:
+        result = verify_bag(
+            dst_client, dst.bucket, dst.key, on_progress=_make_per_file_progress_cb(bar)
+        )
     _print_verify_report(result)
     return _EXIT_OK if result.ok else _EXIT_VERIFY_FAILED
 
@@ -397,7 +460,13 @@ def _guard_against_archive_url(bag_url: str) -> None:
 def _cmd_verify(args: argparse.Namespace) -> int:
     _guard_against_archive_url(args.bag_url)
     bag = parse_s3_prefix(args.bag_url)
-    result = verify_bag(client_for(bag.profile), bag.bucket, bag.key)
+    with _progress_bar(desc="Verifying") as bar:
+        result = verify_bag(
+            client_for(bag.profile),
+            bag.bucket,
+            bag.key,
+            on_progress=_make_per_file_progress_cb(bar),
+        )
     _print_verify_report(result)
     return _EXIT_OK if result.ok else _EXIT_VERIFY_FAILED
 
@@ -414,18 +483,20 @@ def _cmd_verify_against(args: argparse.Namespace) -> int:
     src_client = client_for(src.profile)
     dst_client = client_for(dst.profile)
 
-    result = verify_against(
-        src_client,
-        dst_client,
-        src.bucket,
-        src.key,
-        archive_fmt,
-        dst.bucket,
-        dst.key,
-        archive_url=args.archive_url,
-        target_url=args.target_url,
-        verbose=args.verbose,
-    )
+    with _progress_bar(desc="Verifying against") as bar:
+        result = verify_against(
+            src_client,
+            dst_client,
+            src.bucket,
+            src.key,
+            archive_fmt,
+            dst.bucket,
+            dst.key,
+            archive_url=args.archive_url,
+            target_url=args.target_url,
+            verbose=args.verbose,
+            on_progress=_make_per_file_progress_cb(bar),
+        )
     _print_verify_report(result)
     return _EXIT_OK if result.ok else _EXIT_VERIFY_FAILED
 
@@ -468,18 +539,20 @@ def _cmd_create_bag(args: argparse.Namespace) -> int:
     src_client = client_for(src.profile)
     dst_client = client_for(dst.profile)
 
-    create_bag(
-        src_client,
-        dst_client,
-        src.bucket,
-        src.key,
-        dst.bucket,
-        dst.key,
-        bag_name=args.bag_name,
-        algorithm=args.algorithm,
-        bag_info=bag_info,
-        verbose=args.verbose,
-    )
+    with _progress_bar(desc="Creating bag") as bar:
+        create_bag(
+            src_client,
+            dst_client,
+            src.bucket,
+            src.key,
+            dst.bucket,
+            dst.key,
+            bag_name=args.bag_name,
+            algorithm=args.algorithm,
+            bag_info=bag_info,
+            verbose=args.verbose,
+            on_progress=_make_per_file_progress_cb(bar),
+        )
     return _EXIT_OK
 
 

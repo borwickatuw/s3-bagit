@@ -1955,8 +1955,8 @@ wheels = [
 
 [[package]]
 name = "s3-archive"
-version = "1.4.0"
-source = { git = "https://github.com/borwickatuw/s3-archive?tag=v1.4.0#c6fa6aa487c383123c95ad6c2a986fa76804fbe6" }
+version = "1.5.0"
+source = { git = "https://github.com/borwickatuw/s3-archive?tag=v1.5.0#ab0e77b9ddd389f005b4f6fc5b89c908f6951866" }
 dependencies = [
     { name = "boto3" },
     { name = "py7zr" },
@@ -1995,7 +1995,7 @@ test = [
 requires-dist = [
     { name = "boto3", specifier = ">=1.35" },
     { name = "python-dotenv", specifier = ">=1.0" },
-    { name = "s3-archive", git = "https://github.com/borwickatuw/s3-archive?tag=v1.4.0" },
+    { name = "s3-archive", git = "https://github.com/borwickatuw/s3-archive?tag=v1.5.0" },
     { name = "stream-unzip", specifier = ">=0.0.71" },
     { name = "tqdm", specifier = ">=4.67" },
 ]

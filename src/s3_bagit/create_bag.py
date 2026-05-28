@@ -32,6 +32,7 @@ from s3_archive.list import list_objects
 from s3_bagit import __version__
 from s3_bagit.exceptions import BagError
 from s3_bagit.log_config import get_logger
+from s3_bagit.verify import ProgressCallback
 
 log = get_logger(__name__)
 
@@ -118,6 +119,7 @@ def create_bag(
     algorithm: str = "sha256",
     bag_info: list[tuple[str, str]] | None = None,
     verbose: bool = False,
+    on_progress: ProgressCallback | None = None,
 ) -> tuple[int, int]:
     """Stream ``s3://src_bucket/src_prefix/`` into a BagIt ``.tar.gz`` at ``s3://dest_bucket/dest_key``.
 
@@ -205,6 +207,8 @@ def create_bag(
                 manifest_entries.append((tap.hexdigests()[algorithm], f"data/{rel}"))
                 total_octets += size
                 file_count += 1
+                if on_progress is not None:
+                    on_progress(rel, size)
 
             # Tag-files trailing — built in memory from accumulated state.
             bagit_body = _build_bagit_txt()
