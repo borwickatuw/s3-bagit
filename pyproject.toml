@@ -1,0 +1,182 @@
+[project]
+name = "s3-bagit"
+description = "BagIt extract and verify against any S3-compatible storage, streaming end-to-end."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "University of Washington" }]
+classifiers = ["License :: OSI Approved :: BSD License"]
+# Version is derived from git tags by hatch-vcs (see [tool.hatch.*] below)
+# so `bump-version` is the single source of truth.
+dynamic = ["version"]
+dependencies = [
+    "boto3>=1.35",
+    "python-dotenv>=1.0",
+    "s3-archive>=1.14.0",
+    "stream-unzip>=0.0.71",
+    "tqdm>=4.67",
+]
+
+[project.scripts]
+s3-bagit = "s3_bagit.cli:main"
+
+[tool.uv.sources]
+s3-archive = { git = "https://github.com/borwickatuw/s3-archive", tag = "v1.16.1" }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "vulture>=2.15",
+    "bandit[toml]>=1.7",
+    "detect-secrets>=1.5",
+    "fileplan==0.8.0",
+]
+test = [
+    "pytest>=8.0",
+    "pytest-cov>=4.0",
+    "moto[s3,server]>=5.0",
+]
+
+[build-system]
+requires = ["hatchling", "hatch-vcs>=0.4"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+# Used when no git tags are present yet (e.g. fresh clone before the
+# first `bump-version`). Anything > the latest published version so
+# pip's resolver still treats a dev install as "newer than installed".
+fallback-version = "0.0.0+unknown"
+
+[tool.hatch.build.hooks.vcs]
+# hatch-vcs writes the resolved version here on every build so the
+# runtime can read it without re-shelling out to git.
+version-file = "src/s3_bagit/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/s3_bagit"]
+
+[tool.uv]
+# Local-only tool: keep everything available after `uv sync` per PYTHON.md §6.
+default-groups = ["dev", "test"]
+
+[tool.ruff]
+line-length = 100
+# mdformat owns Markdown (`make format-docs`). ruff's preview formatter
+# rewrites Python fences inside .md, so excluding .md keeps the two
+# formatters from contending over docs. See PYTHON.md §14.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+# Categories deliberately left out of `select` (PYTHON.md §14 asks for the
+# rationale in-file):
+# - TRY (tryceratops): all 18 findings are TRY003, "long message outside the
+#   exception class". BagError / S3OperationError carry the per-call context
+#   an operator needs — which manifest, which key — in the message on purpose.
+# - PLR (pylint refactor): fires PLR0913 on the bag entry points
+#   (create_bag / verify / verify_against), whose long keyword-argument lists
+#   are the public API, and PLR2004 on the literal expected values that are
+#   the point of the assertions. C90 below already bounds complexity, which is
+#   the part worth gating.
+select = [
+    "A",      # flake8-builtins
+    "ARG",    # flake8-unused-arguments
+    "B",      # flake8-bugbear
+    "BLE",    # flake8-blind-except
+    "C90",    # mccabe complexity
+    "E",      # pycodestyle errors
+    "ERA",    # eradicate
+    "F",      # pyflakes
+    "FBT",    # flake8-boolean-trap
+    "I",      # isort — nothing else enforces import order under ruff-format
+    "N",      # pep8-naming
+    "S",      # flake8-bandit
+    "SIM",    # flake8-simplify
+    "T20",    # flake8-print
+    "UP",     # pyupgrade
+    "W",      # pycodestyle warnings
+    "PLC",
+    "PLE",
+    "PLW",
+]
+
+# The paired upstream s3-archive gets its own import block, between the
+# third-party and s3_bagit blocks: it is first-party code that ships from
+# another repo, and keeping it visually separate is why `I` can be enforced
+# without reflowing every module.
+[tool.ruff.lint.isort]
+known-first-party = ["s3_bagit"]
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "paired-upstream",
+    "first-party",
+    "local-folder",
+]
+
+[tool.ruff.lint.isort.sections]
+paired-upstream = ["s3_archive"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "S101",    # assert in tests
+    "ARG001",
+    "ARG002",
+    "ARG005",  # unused lambda args in fixtures/monkeypatches are unavoidable
+    "S105",
+    "S106",
+    "S107",    # hardcoded "password" defaults — fixture knobs, not real creds
+    "T20",
+    "PLW0603",
+]
+"src/s3_bagit/cli.py" = [
+    "T20",     # CLI prints to user
+]
+"src/s3_bagit/issue.py" = [
+    "T20",     # CLI subcommand prints the URL fallback
+]
+
+[tool.bandit]
+exclude_dirs = [".venv", "tests"]
+# B324 (weak md5/sha1 hash) is deliberately NOT skipped: the two hasher
+# constructions in create_bag.py pass `usedforsecurity=False`, which bandit
+# honors natively (SECURITY.md §4a), so a genuinely security-shaped hash added
+# later still reports.
+skips = ["B101"]  # assert (tests are excluded above; keeps the fleet default)
+
+[tool.pysmelly]
+# Test setup boilerplate (bag-fixture construction) dominates duplicate-blocks
+# findings; excluding tests/ matches the maintainer's other Python projects,
+# which all exclude tests. No `skip`
+# list: suppressing a whole *production* category is not how this repo works —
+# see docs/PYSMELLY.md "s3-bagit's convention".
+exclude = ["tests/"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "--strict-markers -ra --tb=short"
+
+[tool.coverage.run]
+# `src`, not `src/s3_bagit`: a second top-level package added under src/
+# would otherwise be measured at zero and never noticed (PYTHON-TESTING.md §6).
+source = ["src"]
+branch = true
+omit = ["*/__init__.py"]
+
+[tool.coverage.report]
+# A floor, not a target: kept just under the total `make test-cov` reports
+# so ordinary churn doesn't trip the gate while the floor stays a real
+# assertion. Ratchet up only when the measured total crosses the next
+# integer; never down.
+fail_under = 92
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+show_missing = true

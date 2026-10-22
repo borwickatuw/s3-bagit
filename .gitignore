@@ -1,0 +1,53 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# hatch-vcs writes this on every build from git describe — derived, never committed
+src/s3_bagit/_version.py
+
+# Virtual environments
+.venv/
+venv/
+
+# uv
+.uv/
+uv.lock.hash
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Claude Code local settings, minus the tracked skills and shared settings
+.claude/*
+!.claude/skills/
+!.claude/settings.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local ephemera (test bags, scratch) + fileplan session state (lock, claims)
+local/
+logs/
+
+# detect-secrets bootstrap temp file (see SECURITY.md Practice #8)
+.secrets.baseline.tmp
